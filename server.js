@@ -9,6 +9,22 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+// --- РАЗРЕШЕНИЕ CORS ДЛЯ ВАШЕГО САЙТА ---
+app.use((req, res, next) => {
+  // Разрешаем запросы только с вашего домена на Vercel
+  res.header('Access-Control-Allow-Origin', 'https://price-hunter-bel.vercel.app');
+  // Разрешаем нужные методы
+  res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  // Разрешаем нужные заголовки (включая ваш секретный ключ)
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, x-secret-key');
+  
+  // Если это предварительный OPTIONS-запрос (preflight), отвечаем успешно
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  
+  next();
+});
 const PORT = process.env.PORT || 3000;
 
 // --- Настройка middleware ---
