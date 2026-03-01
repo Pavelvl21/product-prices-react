@@ -287,12 +287,7 @@ async function updatePricesForNewCode(code) {
     
     try {
         const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
-            "headers": { 
-                "accept": "application/json",
-                "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-                "content-type": "application/json",
-                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            },
+            "headers": { "content-type": "application/json" },
             "body": JSON.stringify({ 
                 ids: [parseInt(code)], 
                 isAdult: false, 
@@ -307,72 +302,38 @@ async function updatePricesForNewCode(code) {
         }
 
         const data = await response.json();
+        const product = data.data.productCards[0];
         
-        // Проверяем структуру ответа
-        if (!data.data || !data.data.productCards || data.data.productCards.length === 0) {
+        if (!product) {
             console.log(`📭 Нет данных для кода ${code} от API`);
             return;
         }
-        
-        const product = data.data.productCards[0];
-        
-        // Проверяем, что получили товар
-        if (!product || !product.code) {
-            console.log(`📭 Пустой ответ для кода ${code}`);
-            return;
-        }
 
-        const price = parseFloat(product.packPrice || product.price || 0);
+        const price = parseFloat(product.packPrice || product.price);
         
-        // Получаем категорию (последнюю из массива категорий)
         let category = 'Товары';
-        if (product.categories && Array.isArray(product.categories) && product.categories.length > 0) {
-            category = product.categories[product.categories.length - 1].name || 'Товары';
+        if (product.categories && product.categories.length > 0) {
+            category = product.categories[product.categories.length - 1].name;
         }
-        
-        // Получаем бренд
         const brand = product.producerName || 'Без бренда';
-        
-        // Получаем ссылку на товар
-        const link = product.link || '';
-
-        console.log(`📦 Товар: ${product.name}`);
-        console.log(`💰 Цена: ${price} руб.`);
-        console.log(`🏷️ Категория: ${category}`);
-        console.log(`🏢 Бренд: ${brand}`);
 
         // Сохраняем в историю цен
         db.run(
             `INSERT INTO price_history (product_code, product_name, price) VALUES (?, ?, ?)`,
-            [code, product.name, price],
-            function(err) {
-                if (err) {
-                    console.error(`❌ Ошибка сохранения в price_history:`, err.message);
-                } else {
-                    console.log(`✅ История цен обновлена для кода ${code}`);
-                }
-            }
+            [code, product.name, price]
         );
 
         // Обновляем или вставляем в products_info
         db.run(
             `INSERT OR REPLACE INTO products_info (code, name, last_price, link, category, brand, last_update) 
              VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-            [code, product.name, price, link, category, brand],
-            function(err) {
-                if (err) {
-                    console.error(`❌ Ошибка сохранения в products_info:`, err.message);
-                } else {
-                    console.log(`✅ Данные товара сохранены для кода ${code}`);
-                }
-            }
+            [code, product.name, price, product.link || '', category, brand]
         );
 
-        console.log(`✅ Данные для нового кода ${code} успешно загружены и сохранены`);
+        console.log(`✅ Данные для нового кода ${code} загружены: ${product.name} - ${price} руб.`);
 
     } catch (error) {
-        console.error(`❌ Ошибка при загрузке данных для кода ${code}:`, error.message);
-        console.error(error);
+        console.error(`❌ Ошибка при загрузке данных для кода ${code}:`, error);
     }
 }
 
