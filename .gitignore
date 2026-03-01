@@ -1,2 +1,23 @@
-node_modules
+# Зависимости
+node_modules/
+
+# База данных (не нужно в Git, она создаётся на сервере)
 products.db
+*.db
+*.db-journal
+
+# Логи
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
