@@ -348,85 +348,140 @@ async function cleanOldRecords() {
   }
 }
 
-// --- ФУНКЦИЯ ОБНОВЛЕНИЯ ВСЕХ ЦЕН ---
+// --- ФУНКЦИЯ ОБНОВЛЕНИЯ ВСЕХ ЦЕН С ПАКЕТНОЙ ОТПРАВКОЙ ---
 async function updateAllPrices() {
   console.log('🔄 Начинаем обновление цен:', new Date().toLocaleString());
 
   try {
+    // Получаем все коды из базы
     const codesResult = await db.execute('SELECT code FROM product_codes');
+    const allCodes = codesResult.rows.map(row => row.code);
     
-    if (codesResult.rows.length === 0) {
+    if (allCodes.length === 0) {
       console.log('📭 Нет кодов для обновления');
       return;
     }
 
-    const productCodes = codesResult.rows.map(row => row.code);
-    console.log(`📦 Найдено кодов: ${productCodes.length}`);
+    console.log(`📦 Всего кодов в базе: ${allCodes.length}`);
 
-    const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
-      headers: {
-        "accept": "application/json",
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        ids: productCodes.map(code => parseInt(code)),
-        isAdult: false,
-        limit: 100
-      }),
-      method: "POST"
-    });
+    // Настройки пакетной обработки
+    const BATCH_SIZE = 100;        // Сколько кодов за один запрос
+    const DELAY_BETWEEN_BATCHES = 2000; // 2 секунды между запросами (чтобы не забанили)
+    
+    const totalBatches = Math.ceil(allCodes.length / BATCH_SIZE);
+    console.log(`📊 Будет отправлено ${totalBatches} запросов`);
 
-    if (!response.ok) {
-      console.error('❌ Ошибка HTTP:', response.status);
-      return;
-    }
+    let totalProcessed = 0;
+    let totalUpdated = 0;
 
-    const data = await response.json();
-    const products = data.data.productCards;
+    // Отправляем запросы пачками
+    for (let i = 0; i < allCodes.length; i += BATCH_SIZE) {
+      const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+      const batch = allCodes.slice(i, i + BATCH_SIZE);
+      
+      console.log(`\n📤 Отправляем пачку ${batchNumber}/${totalBatches} (${batch.length} кодов)`);
 
-    if (!products || products.length === 0) {
-      console.log('📭 Нет данных от API');
-      return;
-    }
+      try {
+        // Формируем и отправляем запрос к API 21vek.by
+        const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
+          headers: {
+            "accept": "application/json",
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({
+            ids: batch.map(code => parseInt(code)),
+            isAdult: false,
+            limit: BATCH_SIZE
+          }),
+          method: "POST"
+        });
 
-    console.log(`📥 Получены данные для ${products.length} товаров`);
+        if (!response.ok) {
+          console.error(`❌ Ошибка HTTP в пачке ${batchNumber}: ${response.status}`);
+          // Продолжаем со следующей пачкой
+          continue;
+        }
 
-    for (const product of products) {
-      const code = product.code.toString();
-      const price = parseFloat(product.packPrice || product.price);
+        const data = await response.json();
+        const products = data.data.productCards;
 
-      let category = 'Товары';
-      if (product.categories && product.categories.length > 0) {
-        category = product.categories[product.categories.length - 1].name;
+        if (!products || products.length === 0) {
+          console.log(`⚠️ Пачка ${batchNumber}: нет данных от API`);
+          continue;
+        }
+
+        console.log(`📥 Пачка ${batchNumber}: получены данные для ${products.length} товаров`);
+
+        // Сохраняем каждый товар из пачки
+        for (const product of products) {
+          try {
+            await saveProductData(product);
+            totalUpdated++;
+          } catch (saveError) {
+            console.error(`❌ Ошибка сохранения товара ${product.code}:`, saveError.message);
+          }
+        }
+
+        totalProcessed += batch.length;
+        console.log(`✅ Пачка ${batchNumber} обработана. Прогресс: ${totalProcessed}/${allCodes.length}`);
+
+      } catch (batchError) {
+        console.error(`❌ Критическая ошибка в пачке ${batchNumber}:`, batchError.message);
       }
-      const brand = product.producerName || 'Без бренда';
 
-      await db.execute({
-        sql: 'INSERT INTO price_history (product_code, product_name, price) VALUES (?, ?, ?)',
-        args: [code, product.name, price]
-      });
-
-      await db.execute({
-        sql: `
-          INSERT INTO products_info (code, name, last_price, link, category, brand, last_update)
-          VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-          ON CONFLICT(code) DO UPDATE SET
-            name = excluded.name,
-            last_price = excluded.last_price,
-            link = excluded.link,
-            category = excluded.category,
-            brand = excluded.brand,
-            last_update = CURRENT_TIMESTAMP
-        `,
-        args: [code, product.name, price, product.link || '', category, brand]
-      });
+      // Если это не последняя пачка — ждём перед следующим запросом
+      if (i + BATCH_SIZE < allCodes.length) {
+        console.log(`⏳ Ожидание ${DELAY_BETWEEN_BATCHES/1000} секунд перед следующей пачкой...`);
+        await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES));
+      }
     }
 
-    console.log('✅ Обновление завершено');
+    console.log('\n🎉 Обновление завершено!');
+    console.log(`📊 Итого обработано: ${totalProcessed} кодов`);
+    console.log(`📊 Сохранено: ${totalUpdated} товаров`);
+
+    // Если какие-то товары не обновились — выведем предупреждение
+    if (totalUpdated < totalProcessed) {
+      console.log(`⚠️ Внимание: ${totalProcessed - totalUpdated} кодов не обновились (возможно, их нет в API 21vek.by)`);
+    }
 
   } catch (error) {
-    console.error('❌ Ошибка при обновлении цен:', error);
+    console.error('❌ Глобальная ошибка при обновлении цен:', error);
   }
+}
+
+// --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ СОХРАНЕНИЯ ДАННЫХ ТОВАРА ---
+async function saveProductData(product) {
+  const code = product.code.toString();
+  const price = parseFloat(product.packPrice || product.price);
+
+  let category = 'Товары';
+  if (product.categories && product.categories.length > 0) {
+    category = product.categories[product.categories.length - 1].name;
+  }
+  const brand = product.producerName || 'Без бренда';
+
+  // Сохраняем в историю цен
+  await db.execute({
+    sql: 'INSERT INTO price_history (product_code, product_name, price) VALUES (?, ?, ?)',
+    args: [code, product.name, price]
+  });
+
+  // Обновляем или вставляем в products_info
+  await db.execute({
+    sql: `
+      INSERT INTO products_info (code, name, last_price, link, category, brand, last_update)
+      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(code) DO UPDATE SET
+        name = excluded.name,
+        last_price = excluded.last_price,
+        link = excluded.link,
+        category = excluded.category,
+        brand = excluded.brand,
+        last_update = CURRENT_TIMESTAMP
+    `,
+    args: [code, product.name, price, product.link || '', category, brand]
+  });
 }
 
 // --- ФУНКЦИЯ ОБНОВЛЕНИЯ ДЛЯ НОВОГО КОДА ---
