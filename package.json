@@ -2,14 +2,16 @@
   "name": "product-server",
   "version": "1.0.0",
   "type": "module",
-  "description": "Product data server with Turso",
+  "description": "Product data server on Koyeb with Turso and authentication",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
     "@libsql/client": "^0.14.0",
+    "bcrypt": "^5.1.1",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
     "node-cron": "^3.0.3"
   }
 }
