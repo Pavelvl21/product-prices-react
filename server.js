@@ -1,4 +1,4 @@
-// server.js - Полный код с аутентификацией, белым списком email и пакетной отправкой
+// server.js - Полный код с умной историей и временем изменений
 import express from 'express';
 import { createClient } from '@libsql/client';
 import path from 'path';
@@ -65,7 +65,6 @@ function validateEmail(email) {
 // --- Инициализация таблиц ---
 async function initTables() {
   try {
-    // Таблица пользователей
     await db.execute(`
       CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,7 +74,6 @@ async function initTables() {
       )
     `);
     
-    // Таблица белого списка email
     await db.execute(`
       CREATE TABLE IF NOT EXISTS allowed_emails (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,7 +82,6 @@ async function initTables() {
       )
     `);
     
-    // Таблица кодов товаров
     await db.execute(`
       CREATE TABLE IF NOT EXISTS product_codes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,7 +90,6 @@ async function initTables() {
       )
     `);
     
-    // Таблица истории цен
     await db.execute(`
       CREATE TABLE IF NOT EXISTS price_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,7 +100,6 @@ async function initTables() {
       )
     `);
     
-    // Таблица информации о товарах
     await db.execute(`
       CREATE TABLE IF NOT EXISTS products_info (
         code TEXT PRIMARY KEY,
@@ -123,7 +118,6 @@ async function initTables() {
   }
 }
 
-// Вызываем инициализацию
 initTables();
 
 // --- Middleware для проверки JWT ---
@@ -146,12 +140,10 @@ const authenticateToken = (req, res, next) => {
 
 // ==================== ПУБЛИЧНЫЕ ЭНДПОИНТЫ ====================
 
-// --- Корневой маршрут ---
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// --- Регистрация (только для email из белого списка) ---
 app.post('/api/register', async (req, res) => {
   const { username, password } = req.body;
 
@@ -164,7 +156,6 @@ app.post('/api/register', async (req, res) => {
   }
 
   try {
-    // Проверяем белый список
     const allowedResult = await db.execute({
       sql: 'SELECT * FROM allowed_emails WHERE email = ?',
       args: [username]
@@ -174,7 +165,6 @@ app.post('/api/register', async (req, res) => {
       return res.status(403).json({ error: 'Регистрация для этого email не разрешена' });
     }
 
-    // Проверяем, не зарегистрирован ли уже
     const userResult = await db.execute({
       sql: 'SELECT * FROM users WHERE username = ?',
       args: [username]
@@ -184,7 +174,6 @@ app.post('/api/register', async (req, res) => {
       return res.status(409).json({ error: 'Пользователь уже существует' });
     }
 
-    // Хешируем пароль
     const saltRounds = 10;
     const passwordHash = await bcrypt.hash(password, saltRounds);
 
@@ -201,7 +190,6 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// --- Вход в систему ---
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
 
@@ -240,7 +228,6 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// --- Управление белым списком (только по секретному ключу) ---
 app.post('/api/allowed-emails', async (req, res) => {
   const userKey = req.headers['x-secret-key'];
   if (!userKey || userKey !== MY_SECRET_KEY) {
@@ -267,7 +254,6 @@ app.post('/api/allowed-emails', async (req, res) => {
   }
 });
 
-// --- Получить белый список (только по секретному ключу) ---
 app.get('/api/allowed-emails', async (req, res) => {
   const userKey = req.headers['x-secret-key'];
   if (!userKey || userKey !== MY_SECRET_KEY) {
@@ -283,9 +269,8 @@ app.get('/api/allowed-emails', async (req, res) => {
   }
 });
 
-// ==================== ЗАЩИЩЕННЫЕ ЭНДПОИНТЫ (ТРЕБУЮТ JWT) ====================
+// ==================== ЗАЩИЩЕННЫЕ ЭНДПОИНТЫ ====================
 
-// --- Получить все коды ---
 app.get('/api/codes', authenticateToken, async (req, res) => {
   try {
     const result = await db.execute('SELECT code FROM product_codes ORDER BY created_at DESC');
@@ -296,7 +281,6 @@ app.get('/api/codes', authenticateToken, async (req, res) => {
   }
 });
 
-// --- Добавить код ---
 app.post('/api/codes', authenticateToken, async (req, res) => {
   const { code } = req.body;
 
@@ -332,7 +316,6 @@ app.post('/api/codes', authenticateToken, async (req, res) => {
   }
 });
 
-// --- Массовое добавление кодов ---
 app.post('/api/codes/bulk', authenticateToken, async (req, res) => {
   const { codes } = req.body;
 
@@ -375,7 +358,6 @@ app.post('/api/codes/bulk', authenticateToken, async (req, res) => {
   res.json({ message: `Добавлено ${results.added.length} кодов`, results });
 });
 
-// --- Удалить код ---
 app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
   const code = req.params.code;
 
@@ -400,7 +382,8 @@ app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
   }
 });
 
-// --- ЭНДПОИНТ: Получить данные для таблицы (с умной историей) ---
+// ==================== ОСНОВНОЙ ЭНДПОИНТ С УМНОЙ ИСТОРИЕЙ ====================
+
 app.get('/api/products', authenticateToken, async (req, res) => {
   try {
     // Получаем все записи из price_history за последние 90 дней
@@ -442,7 +425,7 @@ app.get('/api/products', authenticateToken, async (req, res) => {
       });
     });
 
-    // Группируем по товарам, формируем prices с учётом дат
+    // Группируем по товарам
     const products = {};
     historyResult.rows.forEach(row => {
       if (!products[row.code]) {
@@ -453,15 +436,14 @@ app.get('/api/products', authenticateToken, async (req, res) => {
           category: row.category,
           brand: row.brand,
           prices: {},
-          priceHistory: [] // для детальной страницы
+          priceHistory: []
         };
       }
       
       if (row.updated_at) {
-        const date = row.updated_at.split(' ')[0]; // YYYY-MM-DD
-        const time = row.updated_at.split(' ')[1]; // HH:MM:SS
+        const date = row.updated_at.split(' ')[0];
+        const time = row.updated_at.split(' ')[1];
         
-        // Если для этой даты ещё нет цены или время более позднее
         if (!products[row.code].prices[date] || 
             products[row.code].prices[date].time < time) {
           products[row.code].prices[date] = {
@@ -471,7 +453,6 @@ app.get('/api/products', authenticateToken, async (req, res) => {
           };
         }
         
-        // Сохраняем полную историю для детальной страницы
         products[row.code].priceHistory.push({
           date: row.updated_at,
           price: row.price
@@ -501,7 +482,6 @@ app.get('/api/products', authenticateToken, async (req, res) => {
       };
     });
 
-    // Получаем все уникальные даты для заголовков таблицы
     const datesResult = await db.execute(`
       SELECT DISTINCT DATE(updated_at) as update_date
       FROM price_history
@@ -521,7 +501,6 @@ app.get('/api/products', authenticateToken, async (req, res) => {
   }
 });
 
-// --- Статистика ---
 app.get('/api/stats', authenticateToken, async (req, res) => {
   try {
     const productCount = await db.execute('SELECT COUNT(*) as count FROM product_codes');
@@ -552,10 +531,20 @@ app.get('/api/stats', authenticateToken, async (req, res) => {
 
 // ==================== ФУНКЦИИ ОБНОВЛЕНИЯ ЦЕН ====================
 
-// --- Вспомогательная функция для сохранения данных товара ---
-async function saveProductData(product) {
+// --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ВСТАВКИ ---
+async function insertPriceRecord(code, name, price, timestamp) {
+  await db.execute({
+    sql: 'INSERT INTO price_history (product_code, product_name, price, updated_at) VALUES (?, ?, ?, ?)',
+    args: [code, name, price, timestamp.toISOString().slice(0, 19).replace('T', ' ')]
+  });
+}
+
+// --- УМНАЯ ФУНКЦИЯ СОХРАНЕНИЯ ДАННЫХ ТОВАРА ---
+async function saveProductData(product, timestamp) {
   const code = product.code.toString();
   const price = parseFloat(product.packPrice || product.price);
+  const now = timestamp || new Date();
+  const today = now.toISOString().split('T')[0];
 
   let category = 'Товары';
   if (product.categories && product.categories.length > 0) {
@@ -563,24 +552,47 @@ async function saveProductData(product) {
   }
   const brand = product.producerName || 'Без бренда';
 
-  await db.execute({
-    sql: 'INSERT INTO price_history (product_code, product_name, price) VALUES (?, ?, ?)',
-    args: [code, product.name, price]
+  const existingToday = await db.execute({
+    sql: `SELECT id, price FROM price_history 
+          WHERE product_code = ? AND DATE(updated_at) = ? 
+          ORDER BY updated_at DESC LIMIT 1`,
+    args: [code, today]
   });
+
+  const lastRecord = await db.execute({
+    sql: `SELECT price, updated_at FROM price_history 
+          WHERE product_code = ? 
+          ORDER BY updated_at DESC LIMIT 1`,
+    args: [code]
+  });
+
+  const lastPrice = lastRecord.rows[0]?.price;
+
+  if (existingToday.rows.length === 0) {
+    console.log(`📝 Первая запись за ${today} для ${code}`);
+    await insertPriceRecord(code, product.name, price, now);
+  } else {
+    if (Math.abs(price - lastPrice) > 0.01) {
+      console.log(`🔄 Цена изменилась для ${code}: ${lastPrice} → ${price}`);
+      await insertPriceRecord(code, product.name, price, now);
+    } else {
+      console.log(`⏭️ Цена не изменилась для ${code}, пропускаем`);
+    }
+  }
 
   await db.execute({
     sql: `
       INSERT INTO products_info (code, name, last_price, link, category, brand, last_update)
-      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(code) DO UPDATE SET
         name = excluded.name,
         last_price = excluded.last_price,
         link = excluded.link,
         category = excluded.category,
         brand = excluded.brand,
-        last_update = CURRENT_TIMESTAMP
+        last_update = excluded.last_update
     `,
-    args: [code, product.name, price, product.link || '', category, brand]
+    args: [code, product.name, price, product.link || '', category, brand, now.toISOString().slice(0, 19).replace('T', ' ')]
   });
 }
 
@@ -615,7 +627,8 @@ async function updatePricesForNewCode(code) {
       return;
     }
 
-    await saveProductData(product);
+    const now = new Date();
+    await saveProductData(product, now);
     console.log(`✅ Данные для нового кода ${code} загружены: ${product.name} - ${product.packPrice || product.price} руб.`);
 
   } catch (error) {
@@ -623,7 +636,7 @@ async function updatePricesForNewCode(code) {
   }
 }
 
-// --- ФУНКЦИЯ ОБНОВЛЕНИЯ ВСЕХ ЦЕН С ПАКЕТНОЙ ОТПРАВКОЙ (УСКОРЕННАЯ) ---
+// --- Обновление всех цен с пакетной отправкой ---
 async function updateAllPrices() {
   const startTime = Date.now();
   console.log('🚀 Начинаем ускоренное обновление цен:', new Date().toLocaleString());
@@ -648,7 +661,6 @@ async function updateAllPrices() {
     }
     
     console.log(`📊 Будет обработано ${batches.length} пачек по ${BATCH_SIZE} кодов`);
-    console.log(`⚡ Параллельность: ${CONCURRENT_LIMIT} пачек одновременно`);
 
     let processedBatches = 0;
     let totalUpdated = 0;
@@ -656,6 +668,8 @@ async function updateAllPrices() {
 
     const processBatch = async (batch, batchIndex) => {
       const batchNum = batchIndex + 1;
+      const batchStartTime = new Date();
+      
       console.log(`📤 [Пачка ${batchNum}/${batches.length}] Отправка ${batch.length} кодов`);
 
       try {
@@ -687,18 +701,16 @@ async function updateAllPrices() {
           return 0;
         }
 
-        const savePromises = products.map(product => 
-          saveProductData(product).catch(err => {
-            console.error(`❌ Ошибка сохранения товара ${product.code}:`, err.message);
-            return null;
-          })
-        );
+        for (const product of products) {
+          try {
+            await saveProductData(product, batchStartTime);
+          } catch (saveError) {
+            console.error(`❌ Ошибка сохранения товара ${product.code}:`, saveError.message);
+          }
+        }
 
-        const results = await Promise.all(savePromises);
-        const successful = results.filter(r => r !== null).length;
-        
-        console.log(`✅ [Пачка ${batchNum}] Успешно сохранено: ${successful}/${products.length}`);
-        return successful;
+        console.log(`✅ [Пачка ${batchNum}] Успешно обработана`);
+        return products.length;
 
       } catch (error) {
         console.error(`❌ [Пачка ${batchNum}] Ошибка:`, error.message);
@@ -718,15 +730,12 @@ async function updateAllPrices() {
       totalUpdated += results.reduce((sum, count) => sum + (count || 0), 0);
       processedBatches += currentBatches.length;
       
-      console.log(`📊 Прогресс: ${processedBatches}/${batches.length} пачек, обновлено: ${totalUpdated} товаров`);
+      console.log(`📊 Прогресс: ${processedBatches}/${batches.length} пачек`);
     }
 
     const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log('\n🎉 Обновление завершено!');
     console.log(`⏱️  Время выполнения: ${totalTime} сек`);
-    console.log(`📊 Всего пачек: ${processedBatches}`);
-    console.log(`📊 Обновлено товаров: ${totalUpdated}`);
-    console.log(`📊 Ошибок: ${totalErrors}`);
 
   } catch (error) {
     console.error('❌ Глобальная ошибка при обновлении цен:', error);
@@ -750,29 +759,12 @@ async function cleanOldRecords() {
 // ==================== ПЛАНИРОВЩИКИ ====================
 
 const schedule = [
-  '30 0 * * *',   // 0:30
-  '30 1 * * *',   // 1:30
-  '30 6 * * *',   // 6:30
-  '30 8 * * *',   // 8:30
-  '30 9 * * *',   // 9:30
-  '30 10 * * *',  // 10:30
-  '30 11 * * *',  // 11:30
-  '0 12 * * *',   // 12:00
-  '30 12 * * *',  // 12:30
-  '0 13 * * *',   // 13:00
-  '30 13 * * *',  // 13:30
-  '0 14 * * *',   // 14:00
-  '30 14 * * *',  // 14:30
-  '0 15 * * *',   // 15:00
-  '30 15 * * *',  // 15:30
-  '0 16 * * *',   // 16:00
-  '30 16 * * *',  // 16:30
-  '0 17 * * *',   // 17:00
-  '30 17 * * *',  // 17:30
-  '0 18 * * *',   // 18:00
-  '30 18 * * *',  // 18:30
-  '30 19 * * *',  // 19:30
-  '0 20 * * *',   // 20:00
+  '30 0 * * *',   '30 1 * * *',   '30 6 * * *',   '30 8 * * *',
+  '30 9 * * *',   '30 10 * * *',  '30 11 * * *',  '0 12 * * *',
+  '30 12 * * *',  '0 13 * * *',   '30 13 * * *',  '0 14 * * *',
+  '30 14 * * *',  '0 15 * * *',   '30 15 * * *',  '0 16 * * *',
+  '30 16 * * *',  '0 17 * * *',   '30 17 * * *',  '0 18 * * *',
+  '30 18 * * *',  '30 19 * * *',  '0 20 * * *'
 ];
 
 schedule.forEach(cronTime => {
@@ -792,8 +784,6 @@ setTimeout(() => {
   updateAllPrices();
   cleanOldRecords();
 }, 10000);
-
-// ==================== ЗАПУСК СЕРВЕРА ====================
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Сервер запущен на порту ${PORT}`);
