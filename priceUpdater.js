@@ -309,7 +309,7 @@ export async function cleanOldRecords() {
 // ==================== УВЕДОМЛЕНИЕ О МАССОВОМ ОБНОВЛЕНИИ ====================
 async function sendBatchUpdateNotification(stats) {
   const message = `
-📊 Массовое обновление цен завершено
+📊 Обновление цен завершено!
 
 ✅ Обновлено товаров: ${stats.updated}
 🆕 Новых записей: ${stats.newRecords}
