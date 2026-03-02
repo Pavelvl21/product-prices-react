@@ -277,7 +277,7 @@ export async function updateAllPrices() {
       totalProducts: allCodes.length
     };
     
-    await sendBatchUpdateNotification(stats);
+    // await sendBatchUpdateNotification(stats); =============== отправка сообщений в тг
 
   } catch (error) {
     console.error('❌ Глобальная ошибка при обновлении цен:', error);
