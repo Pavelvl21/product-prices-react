@@ -5,7 +5,7 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import cron from 'node-cron';
 import db, { initTables } from './database.js';
-import { updateAllPrices, cleanOldRecords, updatePricesForNewCode } from './priceUpdater.js';
+import { updateAllPrices, cleanOldRecords, updatePricesForNewCode,sendWeeklyStats } from './priceUpdater.js';
 import { handleTelegramUpdate, setupBotEndpoints } from './telegramBot.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -522,6 +522,14 @@ setTimeout(() => {
   updateAllPrices();
   cleanOldRecords();
 }, 10000);
+
+// НЕДЕЛЬНАЯ СТАТИСТИКА - только добавить, ничего не удалять
+cron.schedule('0 5 * * 1', () => {
+  console.log('📊 Запуск формирования недельной статистики');
+  sendWeeklyStats();
+}, {
+  timezone: "Europe/Minsk"
+});
 
 // ==================== ЗАПУСК СЕРВЕРА ====================
 app.listen(PORT, '0.0.0.0', () => {
