@@ -1,7 +1,6 @@
 import db from './database.js';
 import { sendTelegramMessage, formatPriceChangeNotification } from './telegramBot.js';
 
-// ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
 async function insertPriceRecord(code, name, price, timestamp) {
   await db.execute({
     sql: 'INSERT INTO price_history (product_code, product_name, price, updated_at) VALUES (?, ?, ?, ?)',
@@ -9,14 +8,16 @@ async function insertPriceRecord(code, name, price, timestamp) {
   });
 }
 
-// ==================== СОХРАНЕНИЕ ДАННЫХ ТОВАРА ====================
 async function saveProductData(product, timestamp) {
   const code = product.code.toString();
   const price = parseFloat(product.packPrice || product.price);
+  const packPrice = product.packPrice ? parseFloat(product.packPrice) : null;
   const now = timestamp || new Date();
   const today = now.toISOString().split('T')[0];
 
-  // Определяем категорию и бренд
+  const monthly_payment = product.monthly_payment || null;
+  const no_overpayment_max_months = product.no_overpayment_max_months || null;
+
   let category = 'Товары';
   if (product.categories && product.categories.length > 0) {
     category = product.categories[product.categories.length - 1].name;
@@ -24,7 +25,6 @@ async function saveProductData(product, timestamp) {
   const brand = product.producerName || 'Без бренда';
 
   try {
-    // Проверяем последнюю запись цены
     const lastRecord = await db.execute({
       sql: `SELECT price, updated_at FROM price_history 
             WHERE product_code = ? 
@@ -32,7 +32,6 @@ async function saveProductData(product, timestamp) {
       args: [code]
     });
 
-    // Проверяем, есть ли запись за сегодня
     const todayRecord = await db.execute({
       sql: `SELECT id FROM price_history 
             WHERE product_code = ? AND DATE(updated_at) = ? 
@@ -42,12 +41,10 @@ async function saveProductData(product, timestamp) {
 
     const lastPrice = lastRecord.rows[0]?.price;
 
-    // Если нет записи за сегодня или цена изменилась - сохраняем
     if (todayRecord.rows.length === 0) {
       console.log(`📝 Первая запись за ${today} для ${code}`);
       await insertPriceRecord(code, product.name, price, now);
       
-      // Уведомляем об изменении цены (если это не первая запись вообще)
       if (lastPrice !== undefined && Math.abs(price - lastPrice) > 0.01) {
         const notification = formatPriceChangeNotification(
           { ...product, code }, 
@@ -59,7 +56,6 @@ async function saveProductData(product, timestamp) {
       }
       
     } else {
-      // Если цена изменилась - сохраняем и уведомляем
       if (Math.abs(price - lastPrice) > 0.01) {
         console.log(`🔄 Цена изменилась для ${code}: ${lastPrice} → ${price}`);
         await insertPriceRecord(code, product.name, price, now);
@@ -76,20 +72,37 @@ async function saveProductData(product, timestamp) {
       }
     }
 
-    // Обновляем/вставляем информацию о товаре
     await db.execute({
       sql: `
-        INSERT INTO products_info (code, name, last_price, link, category, brand, last_update)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO products_info (
+          code, name, last_price, packPrice, 
+          monthly_payment, no_overpayment_max_months,
+          link, category, brand, last_update
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(code) DO UPDATE SET
           name = excluded.name,
           last_price = excluded.last_price,
+          packPrice = excluded.packPrice,
+          monthly_payment = excluded.monthly_payment,
+          no_overpayment_max_months = excluded.no_overpayment_max_months,
           link = excluded.link,
           category = excluded.category,
           brand = excluded.brand,
           last_update = excluded.last_update
       `,
-      args: [code, product.name, price, product.link || '', category, brand, now.toISOString().slice(0, 19).replace('T', ' ')]
+      args: [
+        code, 
+        product.name, 
+        price, 
+        packPrice,
+        monthly_payment,
+        no_overpayment_max_months,
+        product.link || '', 
+        category, 
+        brand, 
+        now.toISOString().slice(0, 19).replace('T', ' ')
+      ]
     });
 
   } catch (error) {
@@ -98,7 +111,6 @@ async function saveProductData(product, timestamp) {
   }
 }
 
-// ==================== ОБНОВЛЕНИЕ ДЛЯ НОВОГО КОДА ====================
 export async function updatePricesForNewCode(code) {
   console.log(`🔄 Начинаем обновление для нового кода: ${code}`);
 
@@ -130,6 +142,31 @@ export async function updatePricesForNewCode(code) {
     }
 
     const now = new Date();
+    
+    const partlyPayResponse = await fetch("https://gate.21vek.by/partly-pay/v2/products.calculate", {
+      method: "POST",
+      headers: {
+        "accept": "application/json",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ 
+        data: { 
+          products: [{
+            code: parseInt(code),
+            price: parseFloat(product.packPrice || product.price)
+          }]
+        } 
+      })
+    });
+
+    if (partlyPayResponse.ok) {
+      const partlyPayResult = await partlyPayResponse.json();
+      if (partlyPayResult.data && partlyPayResult.data[0]) {
+        product.monthly_payment = partlyPayResult.data[0].monthly_payment;
+        product.no_overpayment_max_months = partlyPayResult.data[0].no_overpayment_max_months;
+      }
+    }
+
     await saveProductData(product, now);
     console.log(`✅ Данные для нового кода ${code} загружены: ${product.name} - ${product.packPrice || product.price} руб.`);
 
@@ -138,13 +175,11 @@ export async function updatePricesForNewCode(code) {
   }
 }
 
-// ==================== МАССОВОЕ ОБНОВЛЕНИЕ ====================
 export async function updateAllPrices() {
   const startTime = Date.now();
   console.log('🚀 Начинаем ускоренное обновление цен:', new Date().toLocaleString());
 
   try {
-    // Получаем все коды из базы
     const codesResult = await db.execute('SELECT code FROM product_codes');
     const allCodes = codesResult.rows.map(row => row.code);
     
@@ -155,11 +190,9 @@ export async function updateAllPrices() {
 
     console.log(`📦 Всего кодов в базе: ${allCodes.length}`);
 
-    // Настройки пакетной обработки
     const BATCH_SIZE = 100;
     const CONCURRENT_LIMIT = 3;
     
-    // Разбиваем на пачки
     const batches = [];
     for (let i = 0; i < allCodes.length; i += BATCH_SIZE) {
       batches.push(allCodes.slice(i, i + BATCH_SIZE));
@@ -169,10 +202,8 @@ export async function updateAllPrices() {
 
     let processedBatches = 0;
     let totalUpdated = 0;
-    let totalErrors = 0;
     let totalNewRecords = 0;
 
-    // Функция обработки одной пачки
     const processBatch = async (batch, batchIndex) => {
       const batchNum = batchIndex + 1;
       const batchStartTime = new Date();
@@ -180,7 +211,6 @@ export async function updateAllPrices() {
       console.log(`📤 [Пачка ${batchNum}/${batches.length}] Отправка ${batch.length} кодов`);
 
       try {
-        // Запрос к API 21vek
         const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
           headers: {
             "accept": "application/json",
@@ -209,14 +239,52 @@ export async function updateAllPrices() {
           return { updated: 0, newRecords: 0 };
         }
 
+        const productsForPartlyPay = [];
+        for (const product of products) {
+          productsForPartlyPay.push({
+            code: parseInt(product.code),
+            price: parseFloat(product.packPrice || product.price)
+          });
+        }
+
+        let partlyPayMap = {};
+        if (productsForPartlyPay.length > 0) {
+          try {
+            const partlyPayResponse = await fetch("https://gate.21vek.by/partly-pay/v2/products.calculate", {
+              method: "POST",
+              headers: {
+                "accept": "application/json",
+                "content-type": "application/json"
+              },
+              body: JSON.stringify({ 
+                data: { 
+                  products: productsForPartlyPay 
+                } 
+              })
+            });
+
+            if (partlyPayResponse.ok) {
+              const partlyPayResult = await partlyPayResponse.json();
+              if (partlyPayResult.data) {
+                partlyPayResult.data.forEach(item => {
+                  partlyPayMap[item.code] = {
+                    monthly_payment: item.monthly_payment,
+                    no_overpayment_max_months: item.no_overpayment_max_months
+                  };
+                });
+              }
+            }
+          } catch (error) {
+            console.error(`❌ [Пачка ${batchNum}] Ошибка запроса рассрочки:`, error.message);
+          }
+        }
+
         let batchNewRecords = 0;
         
-        // Сохраняем каждый товар
         for (const product of products) {
           try {
             const today = new Date().toISOString().split('T')[0];
             
-            // Проверяем, есть ли запись за сегодня
             const todayRecord = await db.execute({
               sql: `SELECT id FROM price_history 
                     WHERE product_code = ? AND DATE(updated_at) = ? 
@@ -228,7 +296,14 @@ export async function updateAllPrices() {
               batchNewRecords++;
             }
             
-            await saveProductData(product, batchStartTime);
+            const partlyInfo = partlyPayMap[parseInt(product.code)] || {};
+            const productWithPartly = {
+              ...product,
+              monthly_payment: partlyInfo.monthly_payment,
+              no_overpayment_max_months: partlyInfo.no_overpayment_max_months
+            };
+            
+            await saveProductData(productWithPartly, batchStartTime);
           } catch (saveError) {
             console.error(`❌ Ошибка сохранения товара ${product.code}:`, saveError.message);
           }
@@ -239,12 +314,10 @@ export async function updateAllPrices() {
 
       } catch (error) {
         console.error(`❌ [Пачка ${batchNum}] Ошибка:`, error.message);
-        totalErrors++;
         return { updated: 0, newRecords: 0 };
       }
     };
 
-    // Запускаем пачки параллельно (по CONCURRENT_LIMIT штук)
     for (let i = 0; i < batches.length; i += CONCURRENT_LIMIT) {
       const currentBatches = batches.slice(i, i + CONCURRENT_LIMIT);
       console.log(`\n🔄 Запуск группы из ${currentBatches.length} параллельных пачек`);
@@ -267,17 +340,6 @@ export async function updateAllPrices() {
     
     console.log('\n🎉 Обновление завершено!');
     console.log(`⏱️  Время выполнения: ${totalTime} сек`);
-    
-    // Отправляем уведомление в Telegram
-    const stats = {
-      updated: totalUpdated,
-      newRecords: totalNewRecords,
-      errors: totalErrors,
-      duration: totalTime,
-      totalProducts: allCodes.length
-    };
-    
-    // await sendBatchUpdateNotification(stats); =============== отправка сообщений в тг
 
   } catch (error) {
     console.error('❌ Глобальная ошибка при обновлении цен:', error);
@@ -292,7 +354,6 @@ ${error.message}
   }
 }
 
-// ==================== ОЧИСТКА СТАРЫХ ЗАПИСЕЙ ====================
 export async function cleanOldRecords() {
   console.log('🧹 Очистка записей старше 90 дней...');
   try {
@@ -306,36 +367,16 @@ export async function cleanOldRecords() {
   }
 }
 
-// ==================== УВЕДОМЛЕНИЕ О МАССОВОМ ОБНОВЛЕНИИ ====================
-async function sendBatchUpdateNotification(stats) {
-  const message = `
-📊 Обновление цен завершено!
-
-✅ Обновлено товаров: ${stats.updated}
-🆕 Новых записей: ${stats.newRecords}
-⚠️ Ошибок: ${stats.errors}
-🕐 Время: ${stats.duration} сек.
-
-📈 Всего товаров в базе: ${stats.totalProducts}
-`;
-
-  return sendTelegramMessage(message);
-}
-
-// ==================== НЕДЕЛЬНАЯ СТАТИСТИКА ====================
 export async function sendWeeklyStats() {
   try {
     console.log('📊 Формирование недельной статистики...');
     
-    // Получаем даты за последние 7 дней
     const endDate = new Date();
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - 7);
     
     const startStr = startDate.toISOString().split('T')[0];
-    const endStr = endDate.toISOString().split('T')[0];
     
-    // Получаем все изменения цен за неделю
     const changes = await db.execute({
       sql: `
         SELECT 
@@ -351,7 +392,6 @@ export async function sendWeeklyStats() {
       args: [startStr]
     });
 
-    // Считаем статистику
     let increases = 0;
     let decreases = 0;
     let totalIncreasePercent = 0;
@@ -365,7 +405,7 @@ export async function sendWeeklyStats() {
         const newPrice = parseFloat(row.price);
         const changePercent = ((newPrice - oldPrice) / oldPrice) * 100;
         
-        if (changePercent > 0.01) { // Повышение
+        if (changePercent > 0.01) {
           increases++;
           totalIncreasePercent += changePercent;
           if (changePercent > maxIncrease.percent) {
@@ -375,7 +415,7 @@ export async function sendWeeklyStats() {
               code: row.product_code
             };
           }
-        } else if (changePercent < -0.01) { // Снижение
+        } else if (changePercent < -0.01) {
           decreases++;
           totalDecreasePercent += Math.abs(changePercent);
           if (Math.abs(changePercent) > maxDecrease.percent) {
@@ -389,11 +429,9 @@ export async function sendWeeklyStats() {
       }
     });
 
-    // Общее количество товаров
     const totalProducts = await db.execute('SELECT COUNT(*) as count FROM product_codes');
     const totalCount = totalProducts.rows[0].count;
 
-    // Формируем сообщение
     const avgIncrease = increases > 0 ? (totalIncreasePercent / increases).toFixed(1) : '0.0';
     const avgDecrease = decreases > 0 ? (totalDecreasePercent / decreases).toFixed(1) : '0.0';
     const totalChanges = increases + decreases;
@@ -420,7 +458,6 @@ export async function sendWeeklyStats() {
       message += `\n`;
     }
 
-    // Форматируем даты по-мински
     const formatDate = (date) => {
       return date.toLocaleDateString('ru-RU', {
         day: '2-digit',
@@ -431,7 +468,6 @@ export async function sendWeeklyStats() {
 
     message += `🕐 Период: ${formatDate(startDate)} - ${formatDate(endDate)}`;
 
-    // Отправляем в Telegram
     await sendTelegramMessage(message);
     console.log('✅ Недельная статистика отправлена');
 
