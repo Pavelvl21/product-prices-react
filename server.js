@@ -7,8 +7,6 @@ import { fileURLToPath } from 'url';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 
-process.env.TZ = 'Europe/Minsk';
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -402,9 +400,10 @@ app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
   }
 });
 
-// --- Получить данные для таблицы ---
+// --- ИСПРАВЛЕННЫЙ ЭНДПОИНТ: Получить данные для таблицы ---
 app.get('/api/products', authenticateToken, async (req, res) => {
   try {
+    // Получаем все уникальные даты за последние 90 дней
     const datesResult = await db.execute(`
       SELECT DISTINCT DATE(updated_at) as update_date
       FROM price_history
@@ -414,18 +413,28 @@ app.get('/api/products', authenticateToken, async (req, res) => {
 
     const dateColumns = datesResult.rows.map(row => row.update_date);
 
+    // Получаем товары с их последними ценами из price_history
     const productsResult = await db.execute(`
-      SELECT
+      WITH latest_prices AS (
+        SELECT 
+          product_code,
+          product_name,
+          price,
+          DATE(updated_at) as update_date,
+          ROW_NUMBER() OVER (PARTITION BY product_code ORDER BY updated_at DESC) as rn
+        FROM price_history
+        WHERE updated_at >= datetime('now', '-90 days')
+      )
+      SELECT 
         p.code,
         p.name,
         p.link,
         p.category,
         p.brand,
-        ph.price,
-        DATE(ph.updated_at) as update_date
+        lp.price,
+        lp.update_date
       FROM products_info p
-      LEFT JOIN price_history ph ON p.code = ph.product_code
-        AND ph.updated_at >= datetime('now', '-90 days')
+      LEFT JOIN latest_prices lp ON p.code = lp.product_code AND lp.rn = 1
       ORDER BY p.name
     `);
 
@@ -449,7 +458,7 @@ app.get('/api/products', authenticateToken, async (req, res) => {
     res.json({ dates: dateColumns, products: Object.values(products) });
 
   } catch (err) {
-    console.error('Ошибка:', err);
+    console.error('Ошибка в /api/products:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -573,9 +582,8 @@ async function updateAllPrices() {
     console.log(`📦 Всего кодов в базе: ${allCodes.length}`);
 
     const BATCH_SIZE = 100;
-    const CONCURRENT_LIMIT = 3; // Сколько пачек одновременно
+    const CONCURRENT_LIMIT = 3;
     
-    // Разбиваем все коды на пачки
     const batches = [];
     for (let i = 0; i < allCodes.length; i += BATCH_SIZE) {
       batches.push(allCodes.slice(i, i + BATCH_SIZE));
@@ -588,7 +596,6 @@ async function updateAllPrices() {
     let totalUpdated = 0;
     let totalErrors = 0;
 
-    // Функция для обработки одной пачки
     const processBatch = async (batch, batchIndex) => {
       const batchNum = batchIndex + 1;
       console.log(`📤 [Пачка ${batchNum}/${batches.length}] Отправка ${batch.length} кодов`);
@@ -622,7 +629,6 @@ async function updateAllPrices() {
           return 0;
         }
 
-        // Сохраняем товары параллельно
         const savePromises = products.map(product => 
           saveProductData(product).catch(err => {
             console.error(`❌ Ошибка сохранения товара ${product.code}:`, err.message);
@@ -643,7 +649,6 @@ async function updateAllPrices() {
       }
     };
 
-    // Обрабатываем пачки с ограничением параллельности
     for (let i = 0; i < batches.length; i += CONCURRENT_LIMIT) {
       const currentBatches = batches.slice(i, i + CONCURRENT_LIMIT);
       console.log(`\n🔄 Запуск группы из ${currentBatches.length} параллельных пачек`);
@@ -686,7 +691,6 @@ async function cleanOldRecords() {
 
 // ==================== ПЛАНИРОВЩИКИ ====================
 
-// --- Расписание обновлений ---
 const schedule = [
   '30 0 * * *',   // 0:30
   '30 1 * * *',   // 1:30
@@ -713,7 +717,6 @@ const schedule = [
   '0 20 * * *',   // 20:00
 ];
 
-// Запускаем каждое задание по расписанию
 schedule.forEach(cronTime => {
   cron.schedule(cronTime, () => {
     console.log(`⏰ Запуск обновления по расписанию ${cronTime}`);
@@ -721,13 +724,11 @@ schedule.forEach(cronTime => {
   });
 });
 
-// Ежедневная очистка в 3:00 утра
 cron.schedule('0 3 * * *', () => {
   console.log('🧹 Запуск плановой очистки старых записей');
   cleanOldRecords();
 });
 
-// Первое обновление при старте сервера (через 10 секунд)
 setTimeout(() => {
   console.log('🚀 Запуск первого обновления после старта сервера');
   updateAllPrices();
