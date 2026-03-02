@@ -1,6 +1,5 @@
 import { createClient } from '@libsql/client';
 
-// ==================== ПОДКЛЮЧЕНИЕ К БАЗЕ ====================
 const TURSO_URL = process.env.TURSO_URL;
 const TURSO_TOKEN = process.env.TURSO_TOKEN;
 
@@ -14,10 +13,8 @@ const db = createClient({
   authToken: TURSO_TOKEN,
 });
 
-// ==================== ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ ====================
 export async function initTables() {
   try {
-    // Пользователи с паролями
     await db.execute(`
       CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,7 +24,6 @@ export async function initTables() {
       )
     `);
     
-    // Белый список email для регистрации
     await db.execute(`
       CREATE TABLE IF NOT EXISTS allowed_emails (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,7 +32,6 @@ export async function initTables() {
       )
     `);
     
-    // Коды отслеживаемых товаров
     await db.execute(`
       CREATE TABLE IF NOT EXISTS product_codes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,7 +40,6 @@ export async function initTables() {
       )
     `);
     
-    // История цен
     await db.execute(`
       CREATE TABLE IF NOT EXISTS price_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,12 +50,14 @@ export async function initTables() {
       )
     `);
     
-    // Актуальная информация о товарах
     await db.execute(`
       CREATE TABLE IF NOT EXISTS products_info (
         code TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         last_price REAL NOT NULL,
+        packPrice REAL,
+        monthly_payment TEXT,
+        no_overpayment_max_months INTEGER,
         last_update DATETIME DEFAULT CURRENT_TIMESTAMP,
         link TEXT,
         category TEXT,
@@ -69,7 +65,6 @@ export async function initTables() {
       )
     `);
     
-    // Пользователи Telegram для модерации
     await db.execute(`
       CREATE TABLE IF NOT EXISTS telegram_users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
