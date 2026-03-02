@@ -1,256 +1,53 @@
-// server.js - Полный код с Telegram ботом и модерацией пользователей
 import express from 'express';
-import { createClient } from '@libsql/client';
 import path from 'path';
-import cron from 'node-cron';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import { 
-  sendTelegramMessage, 
-  formatPriceChangeNotification,
-  sendBatchUpdateNotification 
-} from './telegram.js';
-import { handleTelegramUpdate } from './telegramBot.js';
+import cron from 'node-cron';
+import db, { initTables } from './database.js';
+import { updateAllPrices, cleanOldRecords, updatePricesForNewCode } from './priceUpdater.js';
+import { handleTelegramUpdate, setupBotEndpoints } from './telegramBot.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// ==================== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ====================
-const TURSO_URL = process.env.TURSO_URL;
-const TURSO_TOKEN = process.env.TURSO_TOKEN;
-const MY_SECRET_KEY = process.env.SECRET_KEY;
 const JWT_SECRET = process.env.JWT_SECRET;
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const MY_SECRET_KEY = process.env.SECRET_KEY;
 
 if (!JWT_SECRET) {
-  console.error('❌ FATAL: JWT_SECRET не задан в переменных окружения!');
+  console.error('❌ JWT_SECRET не задан');
   process.exit(1);
 }
 
-// Проверка настроек Telegram
-const isTelegramConfigured = () => {
-  return TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID;
-};
+// Инициализация БД
+await initTables();
 
-if (!isTelegramConfigured()) {
-  console.log('⚠️ Telegram бот не настроен. Уведомления отключены.');
-  console.log('   Установите TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID для включения уведомлений.');
-}
-
-// ==================== MIDDLEWARE ====================
-
-// CORS middleware (ДО ВСЕХ ЭНДПОИНТОВ)
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', 'https://price-hunter-bel.vercel.app');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-secret-key, cache-control, pragma, expires, if-none-match, if-modified-since');
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  next();
-});
-
+// Middleware
 app.use(express.json());
 app.use(express.static('public'));
 
-// Middleware для проверки JWT (определяем ДО использования)
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
+// CORS
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', 'https://price-hunter-bel.vercel.app');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-secret-key');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
 
-  if (!token) {
-    return res.status(401).json({ error: 'Требуется авторизация' });
-  }
+// Auth middleware
+function authenticateToken(req, res, next) {
+  const token = req.headers['authorization']?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Требуется авторизация' });
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({ error: 'Недействительный токен' });
-    }
+    if (err) return res.status(403).json({ error: 'Недействительный токен' });
     req.user = user;
     next();
   });
-};
-
-// ==================== ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ ====================
-let db;
-try {
-  db = createClient({
-    url: TURSO_URL,
-    authToken: TURSO_TOKEN,
-  });
-  console.log('✅ Turso клиент создан');
-} catch (err) {
-  console.error('❌ Ошибка создания клиента Turso:', err.message);
-  process.exit(1);
 }
-
-// ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
-function validateProductCode(code) {
-  return /^\d{1,12}$/.test(code);
-}
-
-function validateEmail(email) {
-  const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return re.test(email);
-}
-
-// ==================== ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ ====================
-async function initTables() {
-  try {
-    await db.execute(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-    
-    await db.execute(`
-      CREATE TABLE IF NOT EXISTS allowed_emails (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT UNIQUE NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-    
-    await db.execute(`
-      CREATE TABLE IF NOT EXISTS product_codes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        code TEXT UNIQUE NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-    
-    await db.execute(`
-      CREATE TABLE IF NOT EXISTS price_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        product_code TEXT NOT NULL,
-        product_name TEXT NOT NULL,
-        price REAL NOT NULL,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-    
-    await db.execute(`
-      CREATE TABLE IF NOT EXISTS products_info (
-        code TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        last_price REAL NOT NULL,
-        last_update DATETIME DEFAULT CURRENT_TIMESTAMP,
-        link TEXT,
-        category TEXT,
-        brand TEXT
-      )
-    `);
-    
-    await db.execute(`
-      CREATE TABLE IF NOT EXISTS telegram_users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        telegram_id INTEGER UNIQUE NOT NULL,
-        username TEXT,
-        first_name TEXT,
-        last_name TEXT,
-        status TEXT DEFAULT 'pending',
-        requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        approved_at DATETIME,
-        approved_by TEXT,
-        chat_id INTEGER
-      )
-    `);
-    
-    console.log('✅ Все таблицы инициализированы');
-  } catch (err) {
-    console.error('❌ Ошибка инициализации таблиц:', err);
-  }
-}
-
-initTables();
-
-// ==================== TELEGRAM WEBHOOK ЭНДПОИНТЫ ====================
-
-// Публичный эндпоинт для приема обновлений от Telegram
-app.post('/api/telegram/webhook', async (req, res) => {
-  try {
-    const update = req.body;
-    console.log('📩 Получено обновление от Telegram:', update.update_id);
-    
-    // Обрабатываем обновление
-    await handleTelegramUpdate(update);
-    
-    res.sendStatus(200);
-  } catch (err) {
-    console.error('❌ Ошибка webhook:', err);
-    res.sendStatus(500);
-  }
-});
-
-// Защищенный эндпоинт для установки вебхука
-app.post('/api/telegram/set-webhook', authenticateToken, async (req, res) => {
-  const { url } = req.body;
-  
-  if (!url) {
-    return res.status(400).json({ error: 'URL обязателен' });
-  }
-
-  try {
-    const webhookUrl = `${url}/api/telegram/webhook`;
-    const response = await fetch(
-      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook?url=${webhookUrl}`
-    );
-    const data = await response.json();
-    
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Защищенный эндпоинт для получения информации о вебхуке
-app.get('/api/telegram/webhook-info', authenticateToken, async (req, res) => {
-  try {
-    const response = await fetch(
-      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo`
-    );
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Защищенный эндпоинт для просмотра пользователей Telegram
-app.get('/api/telegram/users', authenticateToken, async (req, res) => {
-  try {
-    const result = await db.execute(`
-      SELECT 
-        telegram_id,
-        username,
-        first_name,
-        last_name,
-        status,
-        requested_at,
-        approved_at,
-        approved_by
-      FROM telegram_users 
-      ORDER BY 
-        CASE status
-          WHEN 'pending' THEN 1
-          WHEN 'approved' THEN 2
-          ELSE 3
-        END,
-        requested_at DESC
-    `);
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // ==================== ПУБЛИЧНЫЕ ЭНДПОИНТЫ ====================
 
@@ -258,696 +55,255 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// Регистрация
 app.post('/api/register', async (req, res) => {
   const { username, password } = req.body;
-
+  
   if (!username || !password) {
-    return res.status(400).json({ error: 'Необходимо указать email и пароль' });
-  }
-
-  if (!validateEmail(username)) {
-    return res.status(400).json({ error: 'Некорректный email' });
+    return res.status(400).json({ error: 'Email и пароль обязательны' });
   }
 
   try {
-    const allowedResult = await db.execute({
+    // Проверка в белом списке
+    const allowed = await db.execute({
       sql: 'SELECT * FROM allowed_emails WHERE email = ?',
       args: [username]
     });
 
-    if (allowedResult.rows.length === 0) {
-      return res.status(403).json({ error: 'Регистрация для этого email не разрешена' });
+    if (allowed.rows.length === 0) {
+      return res.status(403).json({ error: 'Email не в белом списке' });
     }
 
-    const userResult = await db.execute({
-      sql: 'SELECT * FROM users WHERE username = ?',
-      args: [username]
-    });
-
-    if (userResult.rows.length > 0) {
-      return res.status(409).json({ error: 'Пользователь уже существует' });
-    }
-
-    const saltRounds = 10;
-    const passwordHash = await bcrypt.hash(password, saltRounds);
-
+    const hash = await bcrypt.hash(password, 10);
+    
     await db.execute({
       sql: 'INSERT INTO users (username, password_hash) VALUES (?, ?)',
-      args: [username, passwordHash]
+      args: [username, hash]
     });
 
     res.status(201).json({ message: 'Регистрация успешна' });
-
   } catch (err) {
-    console.error('Ошибка при регистрации:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    if (err.message.includes('UNIQUE')) {
+      res.status(409).json({ error: 'Пользователь уже существует' });
+    } else {
+      res.status(500).json({ error: err.message });
+    }
   }
 });
 
+// Логин
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
 
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Необходимо указать email и пароль' });
+  const result = await db.execute({
+    sql: 'SELECT id, username, password_hash FROM users WHERE username = ?',
+    args: [username]
+  });
+
+  const user = result.rows[0];
+  if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+    return res.status(401).json({ error: 'Неверный email или пароль' });
   }
 
-  try {
-    const result = await db.execute({
-      sql: 'SELECT id, username, password_hash FROM users WHERE username = ?',
-      args: [username]
-    });
+  const token = jwt.sign(
+    { id: user.id, username: user.username },
+    JWT_SECRET,
+    { expiresIn: '7d' }
+  );
 
-    if (result.rows.length === 0) {
-      return res.status(401).json({ error: 'Неверный email или пароль' });
-    }
-
-    const user = result.rows[0];
-    const validPassword = await bcrypt.compare(password, user.password_hash);
-
-    if (!validPassword) {
-      return res.status(401).json({ error: 'Неверный email или пароль' });
-    }
-
-    const token = jwt.sign(
-      { id: user.id, username: user.username },
-      JWT_SECRET,
-      { expiresIn: '7d' }
-    );
-
-    res.json({ message: 'Вход выполнен успешно', token });
-
-  } catch (err) {
-    console.error('Ошибка при входе:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
+  res.json({ token });
 });
 
+// Добавление email в белый список (только по секретному ключу)
 app.post('/api/allowed-emails', async (req, res) => {
-  const userKey = req.headers['x-secret-key'];
-  if (!userKey || userKey !== MY_SECRET_KEY) {
+  if (req.headers['x-secret-key'] !== MY_SECRET_KEY) {
     return res.status(403).json({ error: 'Доступ запрещен' });
   }
 
   const { email } = req.body;
+  await db.execute({
+    sql: 'INSERT INTO allowed_emails (email) VALUES (?) ON CONFLICT(email) DO NOTHING',
+    args: [email]
+  });
 
-  if (!email || !validateEmail(email)) {
-    return res.status(400).json({ error: 'Некорректный email' });
-  }
-
-  try {
-    await db.execute({
-      sql: 'INSERT INTO allowed_emails (email) VALUES (?) ON CONFLICT(email) DO NOTHING',
-      args: [email]
-    });
-
-    res.json({ message: 'Email добавлен в белый список' });
-
-  } catch (err) {
-    console.error('Ошибка при добавлении email:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
-app.get('/api/allowed-emails', async (req, res) => {
-  const userKey = req.headers['x-secret-key'];
-  if (!userKey || userKey !== MY_SECRET_KEY) {
-    return res.status(403).json({ error: 'Доступ запрещен' });
-  }
-
-  try {
-    const result = await db.execute('SELECT email, created_at FROM allowed_emails ORDER BY created_at DESC');
-    res.json(result.rows);
-  } catch (err) {
-    console.error('Ошибка при получении списка:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
+  res.json({ message: 'Email добавлен' });
 });
 
 // ==================== ЗАЩИЩЕННЫЕ ЭНДПОИНТЫ ====================
 
+// Получить все коды
 app.get('/api/codes', authenticateToken, async (req, res) => {
-  try {
-    const result = await db.execute('SELECT code FROM product_codes ORDER BY created_at DESC');
-    res.json(result.rows.map(row => row.code));
-  } catch (err) {
-    console.error('Ошибка:', err);
-    res.status(500).json({ error: err.message });
-  }
+  const result = await db.execute('SELECT code FROM product_codes ORDER BY created_at DESC');
+  res.json(result.rows.map(r => r.code));
 });
 
+// Добавить код
 app.post('/api/codes', authenticateToken, async (req, res) => {
   const { code } = req.body;
-
-  if (!validateProductCode(code)) {
-    return res.status(400).json({ error: 'Код должен содержать только цифры (до 12 символов)' });
+  
+  if (!/^\d{1,12}$/.test(code)) {
+    return res.status(400).json({ error: 'Неверный формат кода' });
   }
 
-  try {
-    const countResult = await db.execute('SELECT COUNT(*) as count FROM product_codes');
-    const count = countResult.rows[0].count;
-
-    if (count >= 5000) {
-      return res.status(400).json({ error: 'Достигнут лимит в 5000 товаров' });
-    }
-
-    const insertResult = await db.execute({
-      sql: 'INSERT INTO product_codes (code) VALUES (?) ON CONFLICT(code) DO NOTHING RETURNING code',
-      args: [code]
-    });
-
-    if (insertResult.rows.length === 0) {
-      return res.json({ message: 'Код уже существует', code });
-    }
-
-    console.log(`✅ Новый код добавлен: ${code}`);
-    updatePricesForNewCode(code).catch(console.error);
-
-    res.status(201).json({ message: 'Код добавлен', code });
-
-  } catch (err) {
-    console.error('Ошибка:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/codes/bulk', authenticateToken, async (req, res) => {
-  const { codes } = req.body;
-
-  if (!Array.isArray(codes) || codes.length === 0) {
-    return res.status(400).json({ error: 'Нужен массив codes' });
+  const count = await db.execute('SELECT COUNT(*) as c FROM product_codes');
+  if (count.rows[0].c >= 5000) {
+    return res.status(400).json({ error: 'Лимит 5000 товаров' });
   }
 
-  const results = { added: [], failed: [] };
-
-  for (const code of codes) {
-    try {
-      if (!validateProductCode(code)) {
-        results.failed.push({ code, reason: 'неверный формат' });
-        continue;
-      }
-
-      const countResult = await db.execute('SELECT COUNT(*) as count FROM product_codes');
-      if (countResult.rows[0].count >= 5000) {
-        results.failed.push({ code, reason: 'лимит 5000 товаров' });
-        continue;
-      }
-
-      const insertResult = await db.execute({
-        sql: 'INSERT INTO product_codes (code) VALUES (?) ON CONFLICT(code) DO NOTHING RETURNING code',
-        args: [code]
-      });
-
-      if (insertResult.rows.length > 0) {
-        results.added.push(code);
-        updatePricesForNewCode(code).catch(console.error);
-      } else {
-        results.failed.push({ code, reason: 'уже существует' });
-      }
-
-    } catch (err) {
-      results.failed.push({ code, reason: 'ошибка сервера' });
-    }
-  }
-
-  res.json({ message: `Добавлено ${results.added.length} кодов`, results });
-});
-
-app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
-  const code = req.params.code;
-
-  try {
-    await db.execute({ sql: 'DELETE FROM price_history WHERE product_code = ?', args: [code] });
-    await db.execute({ sql: 'DELETE FROM products_info WHERE code = ?', args: [code] });
-    
-    const result = await db.execute({ 
-      sql: 'DELETE FROM product_codes WHERE code = ? RETURNING code', 
-      args: [code] 
-    });
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Код не найден' });
-    }
-
-    res.json({ message: 'Код удалён', code });
-
-  } catch (err) {
-    console.error('Ошибка:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/products', authenticateToken, async (req, res) => {
-  try {
-    const productsResult = await db.execute(`
-      SELECT * FROM products_info
-    `);
-
-    const historyResult = await db.execute(`
-      SELECT 
-        product_code,
-        price,
-        updated_at
-      FROM price_history
-      WHERE updated_at >= datetime('now', '-90 days')
-      ORDER BY product_code, updated_at ASC
-    `);
-
-    const allHistoryByProduct = {};
-    
-    historyResult.rows.forEach(row => {
-      if (!allHistoryByProduct[row.product_code]) {
-        allHistoryByProduct[row.product_code] = [];
-      }
-      allHistoryByProduct[row.product_code].push({
-        date: row.updated_at,
-        price: row.price
-      });
-    });
-
-    const datesResult = await db.execute(`
-      SELECT DISTINCT DATE(updated_at) as update_date
-      FROM price_history
-      WHERE updated_at >= datetime('now', '-90 days')
-      ORDER BY update_date ASC
-    `);
-    const allDates = datesResult.rows.map(row => row.update_date);
-
-    const products = productsResult.rows.map(product => {
-      const allProductHistory = allHistoryByProduct[product.code] || [];
-      
-      const prices = {};
-      
-      allDates.forEach(date => {
-        const dayRecords = allProductHistory.filter(record => 
-          record.date.startsWith(date)
-        );
-        
-        if (dayRecords.length > 0) {
-          const lastRecord = dayRecords.sort((a, b) => 
-            new Date(b.date) - new Date(a.date)
-          )[0];
-          prices[date] = lastRecord.price;
-        } else {
-          const previousRecords = allProductHistory.filter(record => 
-            record.date < date
-          ).sort((a, b) => new Date(b.date) - new Date(a.date));
-          
-          if (previousRecords.length > 0) {
-            prices[date] = previousRecords[0].price;
-          }
-        }
-      });
-
-      const filteredHistory = [];
-      let lastPrice = null;
-      
-      allProductHistory.forEach(record => {
-        if (lastPrice === null || Math.abs(record.price - lastPrice) > 0.01) {
-          filteredHistory.push(record);
-          lastPrice = record.price;
-        }
-      });
-
-      return {
-        code: product.code,
-        name: product.name,
-        link: product.link,
-        category: product.category || 'Товары',
-        brand: product.brand || 'Без бренда',
-        prices: prices,
-        priceHistory: filteredHistory,
-        currentPrice: product.last_price,
-        lastUpdate: product.last_update
-      };
-    });
-
-    res.json({ 
-      dates: allDates.reverse(),
-      products: products 
-    });
-
-  } catch (err) {
-    console.error('Ошибка в /api/products:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/stats', authenticateToken, async (req, res) => {
-  try {
-    const productCount = await db.execute('SELECT COUNT(*) as count FROM product_codes');
-    const recordCount = await db.execute('SELECT COUNT(*) as count FROM price_history');
-    const oldest = await db.execute('SELECT MIN(updated_at) as min FROM price_history');
-    const newest = await db.execute('SELECT MAX(updated_at) as max FROM price_history');
-
-    const totalRecords = recordCount.rows[0].count;
-    const estimatedSizeMB = (totalRecords * 0.0002).toFixed(2);
-
-    res.json({
-      total_products: productCount.rows[0].count,
-      total_records: totalRecords,
-      oldest_record: oldest.rows[0]?.min,
-      newest_record: newest.rows[0]?.max,
-      db_size_mb: estimatedSizeMB,
-      storage_limit_mb: 5000,
-      usage_percent: (estimatedSizeMB / 50).toFixed(1),
-      product_limit: 5000,
-      product_usage_percent: (productCount.rows[0].count / 5000) * 100
-    });
-
-  } catch (err) {
-    console.error('Ошибка статистики:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ==================== ФУНКЦИИ ОБНОВЛЕНИЯ ЦЕН ====================
-
-async function insertPriceRecord(code, name, price, timestamp) {
-  await db.execute({
-    sql: 'INSERT INTO price_history (product_code, product_name, price, updated_at) VALUES (?, ?, ?, ?)',
-    args: [code, name, price, timestamp.toISOString().slice(0, 19).replace('T', ' ')]
+  const result = await db.execute({
+    sql: 'INSERT INTO product_codes (code) VALUES (?) ON CONFLICT(code) DO NOTHING RETURNING code',
+    args: [code]
   });
-}
 
-async function saveProductData(product, timestamp) {
-  const code = product.code.toString();
-  const price = parseFloat(product.packPrice || product.price);
-  const now = timestamp || new Date();
-  const today = now.toISOString().split('T')[0];
-
-  let category = 'Товары';
-  if (product.categories && product.categories.length > 0) {
-    category = product.categories[product.categories.length - 1].name;
+  if (result.rows.length > 0) {
+    // Асинхронно загружаем данные
+    updatePricesForNewCode(code).catch(console.error);
+    res.status(201).json({ message: 'Код добавлен' });
+  } else {
+    res.json({ message: 'Код уже существует' });
   }
-  const brand = product.producerName || 'Без бренда';
+});
 
-  try {
-    const lastRecord = await db.execute({
-      sql: `SELECT price, updated_at FROM price_history 
-            WHERE product_code = ? 
-            ORDER BY updated_at DESC LIMIT 1`,
-      args: [code]
+// Удалить код
+app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
+  const { code } = req.params;
+  
+  await db.execute({ sql: 'DELETE FROM price_history WHERE product_code = ?', args: [code] });
+  await db.execute({ sql: 'DELETE FROM products_info WHERE code = ?', args: [code] });
+  
+  const result = await db.execute({ 
+    sql: 'DELETE FROM product_codes WHERE code = ? RETURNING code', 
+    args: [code] 
+  });
+
+  if (result.rows.length === 0) {
+    res.status(404).json({ error: 'Код не найден' });
+  } else {
+    res.json({ message: 'Код удалён' });
+  }
+});
+
+// Получить товары с историей цен
+app.get('/api/products', authenticateToken, async (req, res) => {
+  const products = await db.execute('SELECT * FROM products_info');
+  
+  const history = await db.execute(`
+    SELECT product_code, price, updated_at
+    FROM price_history
+    WHERE updated_at >= datetime('now', '-90 days')
+    ORDER BY product_code, updated_at ASC
+  `);
+
+  // Группируем историю по товарам
+  const historyByProduct = {};
+  history.rows.forEach(row => {
+    if (!historyByProduct[row.product_code]) {
+      historyByProduct[row.product_code] = [];
+    }
+    historyByProduct[row.product_code].push({
+      date: row.updated_at,
+      price: row.price
     });
+  });
 
-    const todayRecord = await db.execute({
-      sql: `SELECT id FROM price_history 
-            WHERE product_code = ? AND DATE(updated_at) = ? 
-            LIMIT 1`,
-      args: [code, today]
-    });
+  // Получаем все даты для таблицы
+  const dates = await db.execute(`
+    SELECT DISTINCT DATE(updated_at) as d
+    FROM price_history
+    WHERE updated_at >= datetime('now', '-90 days')
+    ORDER BY d ASC
+  `);
 
-    const lastPrice = lastRecord.rows[0]?.price;
+  const allDates = dates.rows.map(row => row.d);
 
-    if (todayRecord.rows.length === 0) {
-      console.log(`📝 Первая запись за ${today} для ${code}`);
-      await insertPriceRecord(code, product.name, price, now);
-      
-      if (lastPrice !== undefined && Math.abs(price - lastPrice) > 0.01) {
-        const notification = formatPriceChangeNotification(
-          { ...product, code }, 
-          lastPrice, 
-          price,
-          'изменилась (первая запись дня)'
-        );
-        await sendTelegramMessage(notification);
-      }
-      
+  // Формируем ответ
+  const result = products.rows.map(p => ({
+    code: p.code,
+    name: p.name,
+    link: p.link,
+    category: p.category || 'Товары',
+    brand: p.brand || 'Без бренда',
+    currentPrice: p.last_price,
+    lastUpdate: p.last_update,
+    priceHistory: historyByProduct[p.code] || [],
+    prices: buildPricesMap(historyByProduct[p.code] || [], allDates)
+  }));
+
+  res.json({ dates: allDates.reverse(), products: result });
+});
+
+function buildPricesMap(history, allDates) {
+  const prices = {};
+  allDates.forEach(date => {
+    const dayRecords = history.filter(h => h.date.startsWith(date));
+    if (dayRecords.length > 0) {
+      // Берём последнюю запись за день
+      const last = dayRecords.sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+      prices[date] = last.price;
     } else {
-      if (Math.abs(price - lastPrice) > 0.01) {
-        console.log(`🔄 Цена изменилась для ${code}: ${lastPrice} → ${price}`);
-        await insertPriceRecord(code, product.name, price, now);
-        
-        const notification = formatPriceChangeNotification(
-          { ...product, code }, 
-          lastPrice, 
-          price
-        );
-        await sendTelegramMessage(notification);
-        
-      } else {
-        console.log(`⏭️ Цена не изменилась для ${code}, пропускаем`);
-      }
+      // Берём предыдущую известную цену
+      const prev = history.filter(h => h.date < date)
+        .sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+      if (prev) prices[date] = prev.price;
     }
-
-    await db.execute({
-      sql: `
-        INSERT INTO products_info (code, name, last_price, link, category, brand, last_update)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(code) DO UPDATE SET
-          name = excluded.name,
-          last_price = excluded.last_price,
-          link = excluded.link,
-          category = excluded.category,
-          brand = excluded.brand,
-          last_update = excluded.last_update
-      `,
-      args: [code, product.name, price, product.link || '', category, brand, now.toISOString().slice(0, 19).replace('T', ' ')]
-    });
-
-  } catch (error) {
-    console.error(`❌ Ошибка в saveProductData для ${code}:`, error);
-    throw error;
-  }
+  });
+  return prices;
 }
 
-async function updatePricesForNewCode(code) {
-  console.log(`🔄 Начинаем обновление для нового кода: ${code}`);
+// Статистика
+app.get('/api/stats', authenticateToken, async (req, res) => {
+  const productCount = await db.execute('SELECT COUNT(*) as c FROM product_codes');
+  const recordCount = await db.execute('SELECT COUNT(*) as c FROM price_history');
+  
+  res.json({
+    total_products: productCount.rows[0].c,
+    total_records: recordCount.rows[0].c,
+    product_limit: 5000,
+    storage_limit_mb: 5000
+  });
+});
 
+// ==================== TELEGRAM ====================
+setupBotEndpoints(app, authenticateToken);
+
+// Webhook для Telegram
+app.post('/api/telegram/webhook', async (req, res) => {
   try {
-    const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
-      headers: {
-        "accept": "application/json",
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        ids: [parseInt(code)],
-        isAdult: false,
-        limit: 1
-      }),
-      method: "POST"
-    });
-
-    if (!response.ok) {
-      console.error(`❌ Ошибка HTTP для кода ${code}:`, response.status);
-      return;
-    }
-
-    const data = await response.json();
-    const product = data.data.productCards[0];
-
-    if (!product) {
-      console.log(`📭 Нет данных для кода ${code} от API`);
-      return;
-    }
-
-    const now = new Date();
-    await saveProductData(product, now);
-    console.log(`✅ Данные для нового кода ${code} загружены: ${product.name} - ${product.packPrice || product.price} руб.`);
-
-  } catch (error) {
-    console.error(`❌ Ошибка при загрузке данных для кода ${code}:`, error);
-  }
-}
-
-async function updateAllPrices() {
-  const startTime = Date.now();
-  console.log('🚀 Начинаем ускоренное обновление цен:', new Date().toLocaleString());
-
-  try {
-    const codesResult = await db.execute('SELECT code FROM product_codes');
-    const allCodes = codesResult.rows.map(row => row.code);
-    
-    if (allCodes.length === 0) {
-      console.log('📭 Нет кодов для обновления');
-      return;
-    }
-
-    console.log(`📦 Всего кодов в базе: ${allCodes.length}`);
-
-    const BATCH_SIZE = 100;
-    const CONCURRENT_LIMIT = 3;
-    
-    const batches = [];
-    for (let i = 0; i < allCodes.length; i += BATCH_SIZE) {
-      batches.push(allCodes.slice(i, i + BATCH_SIZE));
-    }
-    
-    console.log(`📊 Будет обработано ${batches.length} пачек по ${BATCH_SIZE} кодов`);
-
-    let processedBatches = 0;
-    let totalUpdated = 0;
-    let totalErrors = 0;
-    let totalNewRecords = 0;
-
-    const processBatch = async (batch, batchIndex) => {
-      const batchNum = batchIndex + 1;
-      const batchStartTime = new Date();
-      
-      console.log(`📤 [Пачка ${batchNum}/${batches.length}] Отправка ${batch.length} кодов`);
-
-      try {
-        const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
-          headers: {
-            "accept": "application/json",
-            "content-type": "application/json",
-            "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
-          },
-          body: JSON.stringify({
-            ids: batch.map(code => parseInt(code)),
-            isAdult: false,
-            limit: BATCH_SIZE
-          }),
-          method: "POST"
-        });
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-        const products = data.data?.productCards || [];
-
-        console.log(`📥 [Пачка ${batchNum}] Получено ${products.length} товаров`);
-
-        if (products.length === 0) {
-          console.log(`⚠️ [Пачка ${batchNum}] Нет данных от API`);
-          return { updated: 0, newRecords: 0 };
-        }
-
-        let batchNewRecords = 0;
-        
-        for (const product of products) {
-          try {
-            const today = new Date().toISOString().split('T')[0];
-            const lastRecord = await db.execute({
-              sql: `SELECT price FROM price_history 
-                    WHERE product_code = ? 
-                    ORDER BY updated_at DESC LIMIT 1`,
-              args: [product.code.toString()]
-            });
-            
-            const todayRecord = await db.execute({
-              sql: `SELECT id FROM price_history 
-                    WHERE product_code = ? AND DATE(updated_at) = ? 
-                    LIMIT 1`,
-              args: [product.code.toString(), today]
-            });
-            
-            const currentPrice = parseFloat(product.packPrice || product.price);
-            const lastPrice = lastRecord.rows[0]?.price;
-            
-            if (todayRecord.rows.length === 0 || 
-                (lastPrice !== undefined && Math.abs(currentPrice - lastPrice) > 0.01)) {
-              batchNewRecords++;
-            }
-            
-            await saveProductData(product, batchStartTime);
-          } catch (saveError) {
-            console.error(`❌ Ошибка сохранения товара ${product.code}:`, saveError.message);
-          }
-        }
-
-        console.log(`✅ [Пачка ${batchNum}] Успешно обработана`);
-        return { updated: products.length, newRecords: batchNewRecords };
-
-      } catch (error) {
-        console.error(`❌ [Пачка ${batchNum}] Ошибка:`, error.message);
-        totalErrors++;
-        return { updated: 0, newRecords: 0 };
-      }
-    };
-
-    for (let i = 0; i < batches.length; i += CONCURRENT_LIMIT) {
-      const currentBatches = batches.slice(i, i + CONCURRENT_LIMIT);
-      console.log(`\n🔄 Запуск группы из ${currentBatches.length} параллельных пачек`);
-      
-      const results = await Promise.all(
-        currentBatches.map((batch, idx) => processBatch(batch, i + idx))
-      );
-      
-      results.forEach(result => {
-        totalUpdated += result.updated || 0;
-        totalNewRecords += result.newRecords || 0;
-      });
-      
-      processedBatches += currentBatches.length;
-      
-      console.log(`📊 Прогресс: ${processedBatches}/${batches.length} пачек`);
-    }
-
-    const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
-    
-    console.log('\n🎉 Обновление завершено!');
-    console.log(`⏱️  Время выполнения: ${totalTime} сек`);
-    
-    if (isTelegramConfigured()) {
-      const stats = {
-        updated: totalUpdated,
-        newRecords: totalNewRecords,
-        errors: totalErrors,
-        duration: totalTime,
-        totalProducts: allCodes.length
-      };
-      
-      await sendBatchUpdateNotification(stats);
-    }
-
-  } catch (error) {
-    console.error('❌ Глобальная ошибка при обновлении цен:', error);
-    
-    await sendTelegramMessage(`
-⚠️ <b>Ошибка при массовом обновлении</b>
-
-${error.message}
-
-🕐 ${new Date().toLocaleString('ru-RU')}
-`);
-  }
-}
-
-async function cleanOldRecords() {
-  console.log('🧹 Очистка записей старше 90 дней...');
-  try {
-    const result = await db.execute({
-      sql: "DELETE FROM price_history WHERE updated_at < datetime('now', '-90 days')",
-      args: []
-    });
-    console.log(`✅ Удалено ${result.rowsAffected} старых записей`);
+    await handleTelegramUpdate(req.body);
+    res.sendStatus(200);
   } catch (err) {
-    console.error('❌ Ошибка при очистке:', err);
+    console.error('Webhook error:', err);
+    res.sendStatus(500);
   }
-}
+});
 
-// ==================== ПЛАНИРОВЩИКИ ====================
+// ==================== ПЛАНИРОВЩИК ====================
 
+// Расписание обновлений
 const schedule = [
-  '30 0 * * *',   '30 1 * * *',   '30 6 * * *',   '30 8 * * *',
-  '30 9 * * *',   '30 10 * * *',  '30 11 * * *',  '0 12 * * *',
-  '30 12 * * *',  '0 13 * * *',   '30 13 * * *',  '0 14 * * *',
-  '30 14 * * *',  '0 15 * * *',   '30 15 * * *',  '0 16 * * *',
-  '30 16 * * *',  '0 17 * * *',   '30 17 * * *',  '0 18 * * *',
-  '30 18 * * *',  '30 19 * * *',  '0 20 * * *'
+  '30 0 * * *', '30 1 * * *', '30 6 * * *', '30 8 * * *',
+  '30 9 * * *', '30 10 * * *', '30 11 * * *', '0 12 * * *',
+  '30 12 * * *', '0 13 * * *', '30 13 * * *', '0 14 * * *',
+  '30 14 * * *', '0 15 * * *', '30 15 * * *', '0 16 * * *',
+  '30 16 * * *', '0 17 * * *', '30 17 * * *', '0 18 * * *',
+  '30 18 * * *', '30 19 * * *', '0 20 * * *'
 ];
 
 schedule.forEach(cronTime => {
-  cron.schedule(cronTime, () => {
-    console.log(`⏰ Запуск обновления по расписанию ${cronTime}`);
-    updateAllPrices();
-  });
+  cron.schedule(cronTime, updateAllPrices);
 });
 
-cron.schedule('0 3 * * *', () => {
-  console.log('🧹 Запуск плановой очистки старых записей');
-  cleanOldRecords();
-});
+// Очистка в 3 ночи
+cron.schedule('0 3 * * *', cleanOldRecords);
 
+// Первое обновление через 10 сек после старта
 setTimeout(() => {
-  console.log('🚀 Запуск первого обновления после старта сервера');
+  console.log('🚀 Первое обновление...');
   updateAllPrices();
   cleanOldRecords();
 }, 10000);
 
-// ==================== ЗАПУСК СЕРВЕРА ====================
+// Запуск сервера
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Сервер запущен на порту ${PORT}`);
 });
