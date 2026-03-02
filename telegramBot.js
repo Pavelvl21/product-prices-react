@@ -459,4 +459,135 @@ async function handleCallback(query) {
       const userId = data.replace('block_', '');
       const user = await getUser(userId);
       
-      if (
+      if (user) {
+        await updateUserStatus(userId, 'blocked', 'admin');
+        
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: message.chat.id,
+            message_id: message.message_id,
+            reply_markup: { inline_keyboard: [] }
+          })
+        });
+
+        await sendMessage(ADMIN_CHAT_ID, `🚫 Пользователь ${userId} заблокирован`);
+        await sendMessage(user.chat_id, '🚫 <b>Вы заблокированы</b>');
+      }
+    }
+
+    await answerCallback(query.id, '✅ Готово');
+  } catch (err) {
+    console.error('Ошибка в handleCallback:', err);
+  }
+}
+
+// ==================== ПУБЛИЧНЫЕ ФУНКЦИИ ====================
+
+export async function handleTelegramUpdate(update) {
+  try {
+    if (update.message) await handleMessage(update.message);
+    if (update.callback_query) await handleCallback(update.callback_query);
+  } catch (err) {
+    console.error('Update error:', err);
+  }
+}
+
+export function setupBotEndpoints(app, authenticateToken) {
+  app.get('/api/telegram/users', authenticateToken, async (req, res) => {
+    try {
+      const users = await db.execute(`
+        SELECT telegram_id, username, first_name, last_name, status, selected_categories,
+               requested_at, approved_at, approved_by
+        FROM telegram_users
+        ORDER BY 
+          CASE status
+            WHEN 'pending' THEN 1
+            WHEN 'approved' THEN 2
+            ELSE 3
+          END,
+          requested_at DESC
+      `);
+      res.json(users.rows);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/telegram/set-webhook', authenticateToken, async (req, res) => {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: 'URL обязателен' });
+
+    try {
+      const response = await fetch(
+        `https://api.telegram.org/bot${BOT_TOKEN}/setWebhook?url=${url}/api/telegram/webhook`
+      );
+      const data = await response.json();
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/telegram/webhook-info', authenticateToken, async (req, res) => {
+    try {
+      const response = await fetch(
+        `https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo`
+      );
+      const data = await response.json();
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+}
+
+// ==================== ОТПРАВКА УВЕДОМЛЕНИЙ ====================
+
+export async function sendTelegramMessage(message) {
+  if (!BOT_TOKEN || !ADMIN_CHAT_ID) {
+    console.log('⚠️ Telegram не настроен');
+    return false;
+  }
+  
+  try {
+    const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: ADMIN_CHAT_ID,
+        text: message,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true
+      })
+    });
+    return response.ok;
+  } catch (err) {
+    console.error('Ошибка отправки уведомления:', err);
+    return false;
+  }
+}
+
+export function formatPriceChangeNotification(product, oldPrice, newPrice, changeType = 'изменилась') {
+  const change = newPrice - oldPrice;
+  const percent = ((change / oldPrice) * 100).toFixed(1);
+  const emoji = change < 0 ? '🔻' : '📈';
+  const sign = change > 0 ? '+' : '';
+  
+  const link = product.link ? `\n<a href="https://www.21vek.by${product.link}">🔗 Ссылка</a>` : '';
+
+  return `
+<b>${emoji} Цена ${changeType}!</b>
+
+<b>${product.name}</b>
+Код: <code>${product.code}</code>
+
+Старая: ${oldPrice.toFixed(2)} руб.
+Новая: ${newPrice.toFixed(2)} руб.
+Изменение: ${sign}${change.toFixed(2)} руб. (${sign}${percent}%)${link}
+
+🕐 ${new Date().toLocaleString('ru-RU')}
+`;
+}
