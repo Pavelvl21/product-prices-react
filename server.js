@@ -1,4 +1,4 @@
-// server.js - Полный код с умной агрегацией данных (только изменения цен)
+// server.js - Полный код для вашего фронтенда
 import express from 'express';
 import { createClient } from '@libsql/client';
 import path from 'path';
@@ -382,110 +382,64 @@ app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== ИСПРАВЛЕННЫЙ ЭНДПОИНТ С УМНОЙ АГРЕГАЦИЕЙ ====================
+// ==================== ОСНОВНОЙ ЭНДПОИНТ ДЛЯ ФРОНТЕНДА ====================
 
 app.get('/api/products', authenticateToken, async (req, res) => {
   try {
-    // Получаем ВСЮ историю за 90 дней
-    const historyResult = await db.execute(`
-      SELECT 
-        p.code,
-        p.name,
-        p.link,
-        p.category,
-        p.brand,
-        ph.price,
-        ph.updated_at
-      FROM products_info p
-      LEFT JOIN price_history ph ON p.code = ph.product_code
-        AND ph.updated_at >= datetime('now', '-90 days')
-      ORDER BY p.name, ph.updated_at ASC
+    // Получаем все товары с их информацией
+    const productsResult = await db.execute(`
+      SELECT * FROM products_info
     `);
 
-    // Группируем по товарам
-    const products = {};
-    
+    // Получаем всю историю цен за 90 дней
+    const historyResult = await db.execute(`
+      SELECT 
+        product_code,
+        price,
+        updated_at
+      FROM price_history
+      WHERE updated_at >= datetime('now', '-90 days')
+      ORDER BY product_code, updated_at ASC
+    `);
+
+    // Группируем историю по товарам
+    const historyByProduct = {};
     historyResult.rows.forEach(row => {
-      if (!row.updated_at) return; // Пропускаем, если нет истории
-      
-      if (!products[row.code]) {
-        products[row.code] = {
-          code: row.code,
-          name: row.name,
-          link: row.link,
-          category: row.category,
-          brand: row.brand,
-          allPrices: [] // Все записи с датами для определения изменений
-        };
+      if (!historyByProduct[row.product_code]) {
+        historyByProduct[row.product_code] = [];
       }
-      
-      products[row.code].allPrices.push({
+      historyByProduct[row.product_code].push({
         date: row.updated_at,
         price: row.price
       });
     });
 
-    // Формируем финальный ответ с фильтрацией только изменений
-    const productsArray = Object.values(products).map(p => {
-      // Сортируем по дате
-      const sortedHistory = p.allPrices.sort((a, b) => 
+    // Формируем массив товаров в формате, который ожидает фронтенд
+    const products = productsResult.rows.map(product => {
+      const productHistory = historyByProduct[product.code] || [];
+      
+      // Создаем объект prices для таблицы (дата -> цена)
+      const prices = {};
+      productHistory.forEach(record => {
+        const date = record.date.split(' ')[0]; // YYYY-MM-DD
+        prices[date] = record.price;
+      });
+
+      // Сортируем историю по дате для графика
+      const sortedHistory = [...productHistory].sort((a, b) => 
         new Date(a.date) - new Date(b.date)
       );
 
-      // Фильтруем: оставляем только записи, где цена изменилась
-      const priceChanges = [];
-      let lastPrice = null;
-      
-      sortedHistory.forEach(record => {
-        if (lastPrice === null || Math.abs(record.price - lastPrice) > 0.01) {
-          // Первая запись или цена изменилась
-          priceChanges.push({
-            date: record.date,
-            price: record.price
-          });
-          lastPrice = record.price;
-        }
-      });
-
-      // Группируем по дням для таблицы
-      const dailyPrices = {};
-      priceChanges.forEach(change => {
-        const day = change.date.split(' ')[0];
-        if (!dailyPrices[day]) {
-          dailyPrices[day] = [];
-        }
-        dailyPrices[day].push({
-          time: change.date.split(' ')[1],
-          price: change.price
-        });
-      });
-
-      // Форматируем для таблицы: если за день было несколько изменений,
-      // показываем их все, иначе только одну цену
-      const tablePrices = {};
-      Object.entries(dailyPrices).forEach(([day, changes]) => {
-        if (changes.length === 1) {
-          // Одно изменение за день - показываем просто цену
-          tablePrices[day] = changes[0].price;
-        } else {
-          // Несколько изменений - показываем все с временем
-          tablePrices[day] = changes.map(c => ({
-            time: c.time,
-            price: c.price
-          }));
-        }
-      });
-
       return {
-        code: p.code,
-        name: p.name,
-        link: p.link,
-        category: p.category,
-        brand: p.brand,
-        prices: tablePrices, // для таблицы (может быть число или массив объектов)
-        priceChanges: priceChanges, // все изменения для детальной страницы
-        currentPrice: priceChanges.length > 0 ? priceChanges[priceChanges.length - 1].price : null,
-        lastUpdate: priceChanges.length > 0 ? priceChanges[priceChanges.length - 1].date : null
+        code: product.code,
+        name: product.name,
+        link: product.link,
+        category: product.category || 'Товары',
+        brand: product.brand || 'Без бренда',
+        prices: prices, // для таблицы
+        priceHistory: sortedHistory, // для детальной страницы
+        currentPrice: product.last_price,
+        lastUpdate: product.last_update
       };
     });
 
@@ -500,7 +454,7 @@ app.get('/api/products', authenticateToken, async (req, res) => {
 
     res.json({ 
       dates: dateColumns, 
-      products: productsArray 
+      products: products 
     });
 
   } catch (err) {
@@ -578,8 +532,6 @@ async function saveProductData(product, timestamp) {
     });
 
     const lastPrice = lastRecord.rows[0]?.price;
-    const lastDate = lastRecord.rows[0]?.updated_at;
-    const lastDateDay = lastDate ? lastDate.split(' ')[0] : null;
 
     // Логика принятия решения
     if (todayRecord.rows.length === 0) {
