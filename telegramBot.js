@@ -156,6 +156,22 @@ async function getProductsByCategory(category) {
 
 async function showCategoriesWithMultiSelect(chatId, messageId = null) {
   try {
+     try {
+    console.log('showCategoriesWithMultiSelect вызван для chatId:', chatId);
+    
+    const categories = await getAllCategories();
+    console.log('Получены категории:', categories);
+    
+    if (categories.length === 0) {
+      await sendMessage(chatId, '📭 В базе пока нет категорий');
+      return;
+    }
+
+    const user = await getUser(chatId);
+    console.log('Пользователь:', user);
+    
+    const selectedCategories = user?.selected_categories || [];
+    console.log('Выбранные категории:', selectedCategories);
     const categories = await getAllCategories();
     
     if (categories.length === 0) {
