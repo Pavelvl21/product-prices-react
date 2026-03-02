@@ -350,7 +350,33 @@ app.get('/api/allowed-emails', async (req, res) => {
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
-
+// просмотр всех пользователей Telegram
+app.get('/api/telegram/users', authenticateToken, async (req, res) => {
+  try {
+    const result = await db.execute(`
+      SELECT 
+        telegram_id,
+        username,
+        first_name,
+        last_name,
+        status,
+        requested_at,
+        approved_at,
+        approved_by
+      FROM telegram_users 
+      ORDER BY 
+        CASE status
+          WHEN 'pending' THEN 1
+          WHEN 'approved' THEN 2
+          ELSE 3
+        END,
+        requested_at DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 // ==================== ЗАЩИЩЕННЫЕ ЭНДПОИНТЫ ====================
 
 app.get('/api/codes', authenticateToken, async (req, res) => {
