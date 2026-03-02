@@ -400,7 +400,7 @@ app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
   }
 });
 
-// --- ЭНДПОИНТ: Получить данные для таблицы (актуальные цены + история) ---
+// --- ЭНДПОИНТ: Получить данные для таблицы (ПРАВИЛЬНАЯ ВЕРСИЯ) ---
 app.get('/api/products', authenticateToken, async (req, res) => {
   try {
     // Получаем все уникальные даты за последние 90 дней
@@ -413,7 +413,7 @@ app.get('/api/products', authenticateToken, async (req, res) => {
 
     const dateColumns = datesResult.rows.map(row => row.update_date);
 
-    // Получаем все товары и все их цены из price_history
+    // Получаем ВСЕ цены для истории
     const historyResult = await db.execute(`
       SELECT 
         p.code,
@@ -429,7 +429,28 @@ app.get('/api/products', authenticateToken, async (req, res) => {
       ORDER BY p.name, ph.updated_at DESC
     `);
 
-    // Группируем по товарам
+    // Получаем ТОЛЬКО ПОСЛЕДНИЕ цены для актуального отображения
+    const latestPricesResult = await db.execute(`
+      SELECT 
+        product_code,
+        price,
+        updated_at
+      FROM price_history
+      WHERE (product_code, updated_at) IN (
+        SELECT product_code, MAX(updated_at)
+        FROM price_history
+        WHERE updated_at >= datetime('now', '-90 days')
+        GROUP BY product_code
+      )
+    `);
+
+    // Создаём Map для быстрого доступа к последним ценам
+    const latestPrices = new Map();
+    latestPricesResult.rows.forEach(row => {
+      latestPrices.set(row.product_code, row.price);
+    });
+
+    // Группируем все цены по товарам
     const products = {};
     historyResult.rows.forEach(row => {
       if (!products[row.code]) {
@@ -440,23 +461,18 @@ app.get('/api/products', authenticateToken, async (req, res) => {
           category: row.category,
           brand: row.brand,
           prices: {},
-          // Добавляем поле с последней ценой для сортировки
-          currentPrice: null
+          // Берём последнюю цену из отдельного запроса
+          currentPrice: latestPrices.get(row.code) || null
         };
       }
       if (row.update_date) {
         products[row.code].prices[row.update_date] = row.price;
-        // Если это самая новая дата, запоминаем как текущую цену
-        if (dateColumns[0] === row.update_date) {
-          products[row.code].currentPrice = row.price;
-        }
       }
     });
 
-    // Преобразуем в массив, добавляем поле для сортировки
+    // Преобразуем в массив, добавляем поле price для сортировки
     const productsArray = Object.values(products).map(p => ({
       ...p,
-      // Используем currentPrice для сортировки по цене
       price: p.currentPrice
     }));
 
