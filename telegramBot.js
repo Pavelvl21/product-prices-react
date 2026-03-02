@@ -158,18 +158,21 @@ function formatProductMessage(product) {
     return price ? price.toFixed(2).replace('.', ',') : '—';
   };
 
-  const rows = [
-    `🛍 <b>${product.name}</b>`,
-    ``,
-    `📋 Код товара: <code>${product.code}</code>`,
-    `💰 РЦ: ${formatPrice(product.last_price)} руб.`,
-    `💳 Цена в рассрочку: ${formatPrice(product.packPrice)} руб.`,
-    `📆 Платеж: ${product.monthly_payment ? product.monthly_payment.replace('.', ',') : '—'} руб./мес`,
-    `⏱ Рассрочка: ${product.no_overpayment_max_months || '—'} мес.`,
-    `🔗 <a href="${product.link}">Ссылка на товар</a>`
-  ];
+  // Формируем полную ссылку
+  const fullLink = product.link 
+    ? `https://www.21vek.by${product.link}` 
+    : null;
 
-  return rows.join('\n');
+  return `
+🛍 <b>${product.name}</b>
+
+📋 Код товара: <code>${product.code}</code>
+💰 <b>РЦ: ${formatPrice(product.last_price)} руб.</b>
+💳 Цена в рассрочку: ${formatPrice(product.packPrice)} руб.
+📆 Платеж: ${product.monthly_payment ? product.monthly_payment.replace('.', ',') : '—'} руб./мес
+⏱ Рассрочка: ${product.no_overpayment_max_months || '—'} мес.
+${fullLink ? `🔗 <a href="${fullLink}">Ссылка на товар</a>` : ''}
+`;
 }
 
 // ==================== ОБРАБОТЧИКИ ====================
