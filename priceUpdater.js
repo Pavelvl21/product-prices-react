@@ -309,7 +309,7 @@ export async function cleanOldRecords() {
 // ==================== УВЕДОМЛЕНИЕ О МАССОВОМ ОБНОВЛЕНИИ ====================
 async function sendBatchUpdateNotification(stats) {
   const message = `
-📊 <b>Массовое обновление цен завершено</b>
+📊 Массовое обновление цен завершено
 
 ✅ Обновлено товаров: ${stats.updated}
 🆕 Новых записей: ${stats.newRecords}
@@ -320,4 +320,122 @@ async function sendBatchUpdateNotification(stats) {
 `;
 
   return sendTelegramMessage(message);
+}
+
+// ==================== НЕДЕЛЬНАЯ СТАТИСТИКА ====================
+export async function sendWeeklyStats() {
+  try {
+    console.log('📊 Формирование недельной статистики...');
+    
+    // Получаем даты за последние 7 дней
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - 7);
+    
+    const startStr = startDate.toISOString().split('T')[0];
+    const endStr = endDate.toISOString().split('T')[0];
+    
+    // Получаем все изменения цен за неделю
+    const changes = await db.execute({
+      sql: `
+        SELECT 
+          product_code,
+          product_name,
+          price,
+          updated_at,
+          LAG(price) OVER (PARTITION BY product_code ORDER BY updated_at) as prev_price
+        FROM price_history
+        WHERE updated_at >= datetime(?)
+        ORDER BY updated_at ASC
+      `,
+      args: [startStr]
+    });
+
+    // Считаем статистику
+    let increases = 0;
+    let decreases = 0;
+    let totalIncreasePercent = 0;
+    let totalDecreasePercent = 0;
+    let maxIncrease = { percent: 0, name: '', code: '' };
+    let maxDecrease = { percent: 0, name: '', code: '' };
+    
+    changes.rows.forEach(row => {
+      if (row.prev_price) {
+        const oldPrice = parseFloat(row.prev_price);
+        const newPrice = parseFloat(row.price);
+        const changePercent = ((newPrice - oldPrice) / oldPrice) * 100;
+        
+        if (changePercent > 0.01) { // Повышение
+          increases++;
+          totalIncreasePercent += changePercent;
+          if (changePercent > maxIncrease.percent) {
+            maxIncrease = {
+              percent: changePercent,
+              name: row.product_name,
+              code: row.product_code
+            };
+          }
+        } else if (changePercent < -0.01) { // Снижение
+          decreases++;
+          totalDecreasePercent += Math.abs(changePercent);
+          if (Math.abs(changePercent) > maxDecrease.percent) {
+            maxDecrease = {
+              percent: Math.abs(changePercent),
+              name: row.product_name,
+              code: row.product_code
+            };
+          }
+        }
+      }
+    });
+
+    // Общее количество товаров
+    const totalProducts = await db.execute('SELECT COUNT(*) as count FROM product_codes');
+    const totalCount = totalProducts.rows[0].count;
+
+    // Формируем сообщение
+    const avgIncrease = increases > 0 ? (totalIncreasePercent / increases).toFixed(1) : '0.0';
+    const avgDecrease = decreases > 0 ? (totalDecreasePercent / decreases).toFixed(1) : '0.0';
+    const totalChanges = increases + decreases;
+
+    let message = `📊 Итоги мониторинга за 7 дней\n\n`;
+    message += `📈 Общая статистика:\n`;
+    message += `• Всего товаров: ${totalCount}\n`;
+    message += `• Изменений цен: ${totalChanges}\n\n`;
+    
+    message += `📊 Динамика изменений:\n`;
+    message += `• 🔼 Повышение: ${increases}\n`;
+    message += `  Среднее повышение: +${avgIncrease}%\n`;
+    message += `• 🔻 Снижение: ${decreases}\n`;
+    message += `  Среднее снижение: -${avgDecrease}%\n\n`;
+
+    if (totalChanges > 0) {
+      message += `💰 Самое большое изменение:\n`;
+      if (maxIncrease.percent > 0) {
+        message += `• ⬆️ ${maxIncrease.name} (код ${maxIncrease.code}): +${maxIncrease.percent.toFixed(1)}%\n`;
+      }
+      if (maxDecrease.percent > 0) {
+        message += `• ⬇️ ${maxDecrease.name} (код ${maxDecrease.code}): -${maxDecrease.percent.toFixed(1)}%\n`;
+      }
+      message += `\n`;
+    }
+
+    // Форматируем даты по-мински
+    const formatDate = (date) => {
+      return date.toLocaleDateString('ru-RU', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      });
+    };
+
+    message += `🕐 Период: ${formatDate(startDate)} - ${formatDate(endDate)}`;
+
+    // Отправляем в Telegram
+    await sendTelegramMessage(message);
+    console.log('✅ Недельная статистика отправлена');
+
+  } catch (error) {
+    console.error('❌ Ошибка при формировании статистики:', error);
+  }
 }
