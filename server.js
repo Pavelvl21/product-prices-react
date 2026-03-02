@@ -571,12 +571,33 @@ async function saveProductData(product, timestamp) {
       // Нет записи за сегодня - сохраняем всегда (это первая запись дня)
       console.log(`📝 Первая запись за ${today} для ${code}`);
       await insertPriceRecord(code, product.name, price, now);
+      
+      // Если это не первая запись вообще (есть lastPrice) - уведомляем
+      if (lastPrice !== undefined && Math.abs(price - lastPrice) > 0.01) {
+        const notification = formatPriceChangeNotification(
+          { ...product, code }, 
+          lastPrice, 
+          price,
+          'изменилась (первая запись дня)'
+        );
+        await sendTelegramMessage(notification);
+      }
+      
     } else {
       // Запись за сегодня уже есть
       if (Math.abs(price - lastPrice) > 0.01) {
         // Цена изменилась - сохраняем с точным временем
         console.log(`🔄 Цена изменилась для ${code}: ${lastPrice} → ${price}`);
         await insertPriceRecord(code, product.name, price, now);
+        
+        // ОТПРАВЛЯЕМ УВЕДОМЛЕНИЕ В TELEGRAM
+        const notification = formatPriceChangeNotification(
+          { ...product, code }, 
+          lastPrice, 
+          price
+        );
+        await sendTelegramMessage(notification);
+        
       } else {
         // Цена не изменилась - ничего не делаем
         console.log(`⏭️ Цена не изменилась для ${code}, пропускаем`);
