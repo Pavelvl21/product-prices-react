@@ -1,4 +1,5 @@
 import fetch from 'node-fetch';
+import db from './database.js';
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
