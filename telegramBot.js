@@ -376,11 +376,11 @@ ${circleEmoji} <b>${product.product_name}</b>
 💰 <b>Было:</b> ${formatPrice(product.previous_price)} руб.
 💰 <b>Стало:</b> ${formatPrice(product.current_price)} руб. ${circleEmoji} ${formatPrice(changeValue)} (${product.percent}%)
 💳 РЦ в рассрочку: ${formatPrice(product.packPrice)} руб.
-// 📆 Платеж: ${product.monthly_payment || '—'} руб./мес - это минимальный платеж в принципе, не в рассрочку без переплат
 ⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
 🔗 <a href="https://www.21vek.by${product.link}">Ссылка на товар</a>
 `;
-}
+} 
+// 📆 Платеж: ${product.monthly_payment || '—'} руб./мес - это минимальный доступный платеж, даже с переплатой
 
 // ==================== ФУНКЦИЯ ДЛЯ РАЗБИВКИ ДЛИННЫХ СООБЩЕНИЙ ====================
 
