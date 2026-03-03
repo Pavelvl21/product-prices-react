@@ -203,64 +203,68 @@ async function getProductsByCategory(category) {
 
 async function getRecentPriceChanges() {
   try {
-    // Получаем сегодняшнюю и вчерашнюю дату
-    const today = new Date().toISOString().split('T')[0];
-    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    // Получаем текущую цену и дату последнего обновления
+    const result = await db.execute(`
+      SELECT 
+        pi.code,
+        pi.name,
+        pi.last_price as current_price,
+        pi.last_update,
+        pi.packPrice,
+        pi.monthly_payment,
+        pi.no_overpayment_max_months,
+        pi.link,
+        pi.category,
+        pi.brand
+      FROM products_info pi
+      WHERE pi.last_update >= datetime('now', '-2 days')
+    `);
     
-    console.log(`Сегодня: ${today}, Вчера: ${yesterday}`);
+    console.log(`Найдено товаров с обновлениями: ${result.rows.length}`);
     
-    const result = await db.execute({
-      sql: `
-        SELECT 
-          pi.code,
-          pi.name,
-          pi.last_price as current_price,
-          pi.last_update,
-          ph_yesterday.price as yesterday_price,
-          pi.packPrice,
-          pi.monthly_payment,
-          pi.no_overpayment_max_months,
-          pi.link,
-          pi.category,
-          pi.brand
-        FROM products_info pi
-        LEFT JOIN (
-          SELECT product_code, price
-          FROM price_history
-          WHERE DATE(updated_at) = ?
-          GROUP BY product_code
-        ) ph_yesterday ON pi.code = ph_yesterday.product_code
-        WHERE pi.last_update >= datetime('now', '-2 days')
-      `,
-      args: [yesterday]
-    });
+    const changes = [];
     
-    console.log(`Найдено товаров: ${result.rows.length}`);
+    for (const row of result.rows) {
+      // Получаем ПРЕДЫДУЩУЮ цену (последнюю запись ДО текущей)
+      const prevResult = await db.execute({
+        sql: `
+          SELECT price, updated_at
+          FROM price_history 
+          WHERE product_code = ? AND updated_at < ?
+          ORDER BY updated_at DESC
+          LIMIT 1
+        `,
+        args: [row.code, row.last_update]
+      });
+      
+      if (prevResult.rows.length > 0) {
+        const previous_price = prevResult.rows[0].price;
+        const change = row.current_price - previous_price;
+        
+        // Проверяем, изменилась ли цена (не нано-копейки)
+        if (Math.abs(change) > 0.01) {
+          changes.push({
+            product_code: row.code,
+            product_name: row.name,
+            current_price: row.current_price,
+            updated_at: row.last_update,
+            previous_price: previous_price,
+            previous_date: prevResult.rows[0].updated_at,
+            change: change,
+            percent: (change / previous_price * 100).toFixed(1),
+            packPrice: row.packPrice,
+            monthly_payment: row.monthly_payment,
+            no_overpayment_max_months: row.no_overpayment_max_months,
+            link: row.link,
+            category: row.category,
+            brand: row.brand
+          });
+        }
+      }
+    }
     
-    const changes = result.rows
-      .filter(row => row.yesterday_price && Math.abs(row.current_price - row.yesterday_price) > 0.01)
-      .map(row => {
-        const change = row.current_price - row.yesterday_price;
-        return {
-          product_code: row.code,
-          product_name: row.name,
-          current_price: row.current_price,
-          updated_at: row.last_update,
-          previous_price: row.yesterday_price,
-          change: change,
-          percent: (change / row.yesterday_price * 100).toFixed(1),
-          packPrice: row.packPrice,
-          monthly_payment: row.monthly_payment,
-          no_overpayment_max_months: row.no_overpayment_max_months,
-          link: row.link,
-          category: row.category,
-          brand: row.brand
-        };
-      })
-      .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
-    
-    console.log(`Изменений после фильтрации: ${changes.length}`);
-    return changes;
+    // Сортируем от самых свежих
+    return changes.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
   } catch (err) {
     console.error('Ошибка получения изменений:', err);
     return [];
