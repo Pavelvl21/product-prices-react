@@ -156,6 +156,30 @@ async function getProductsFromServer() {
 
 // ==================== ФОРМАТИРОВАНИЕ ====================
 
+function formatPrice(price) {
+  if (price === null || price === undefined) return '—';
+  const formatted = Math.abs(price).toFixed(2).replace('.', ',');
+  if (price > 0) return `+${formatted}`;
+  if (price < 0) return `-${formatted}`;
+  return formatted;
+}
+
+function formatProductFull(product) {
+  const circleEmoji = product.isDecrease ? '🔴' : '🟢';
+  const changeValue = product.change;
+
+  return `
+${circleEmoji} <b>${product.product_name}</b>
+📋 Код: <code>${product.product_code}</code>
+💰 <b>Было:</b> ${formatPrice(product.previous_price)} руб.
+💰 <b>Стало:</b> ${formatPrice(product.current_price)} руб. ${circleEmoji} ${formatPrice(changeValue)} (${product.percent}%)
+💳 РЦ в рассрочку: ${formatPrice(product.packPrice)} руб.
+⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
+🔗 <a href="https://www.21vek.by${product.link}">Ссылка на товар</a>
+`;
+}
+// 📆 Платеж: ${product.monthly_payment || '—'} руб./мес - это минимальный доступный платеж, даже с переплатой
+
 function formatUserInfo(user) {
   return `
 👤 <b>${user.first_name || '—'} ${user.last_name || ''}</b>
@@ -457,7 +481,7 @@ async function handleCallback(query) {
   await answerCallback(query.id, '❓ Неизвестная команда');
 }
 
-// ==================== ОБРАБОТЧИК ОБНОВЛЕНИЙ ====================
+// ==================== ПУБЛИЧНЫЕ ФУНКЦИИ ====================
 
 export async function handleTelegramUpdate(update) {
   try {
@@ -467,8 +491,6 @@ export async function handleTelegramUpdate(update) {
     console.error('❌ Update error:', err);
   }
 }
-
-// ==================== ЭНДПОИНТЫ ДЛЯ ФРОНТА ====================
 
 export function setupBotEndpoints(app, authenticateToken) {
   app.get('/api/telegram/users', authenticateToken, async (req, res) => {
@@ -489,5 +511,28 @@ export function setupBotEndpoints(app, authenticateToken) {
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
+  });
+}
+
+// ==================== ЭКСПОРТ ДЛЯ УВЕДОМЛЕНИЙ (НУЖЕН priceUpdater.js) ====================
+
+export function formatPriceChangeNotification(product, oldPrice, newPrice) {
+  const change = newPrice - oldPrice;
+  const percent = ((change / oldPrice) * 100).toFixed(1);
+  const isDecrease = change < 0;
+  const circleEmoji = isDecrease ? '🔴' : '🟢';
+
+  return formatProductFull({
+    product_code: product.code,
+    product_name: product.name,
+    current_price: newPrice,
+    previous_price: oldPrice,
+    change: change,
+    percent: percent,
+    packPrice: product.packPrice,
+    monthly_payment: product.monthly_payment,
+    no_overpayment_max_months: product.no_overpayment_max_months,
+    link: product.link,
+    isDecrease: isDecrease
   });
 }
