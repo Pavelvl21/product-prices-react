@@ -46,6 +46,47 @@ async function answerCallback(callbackId, text) {
   }
 }
 
+// ==================== ФУНКЦИЯ ДЛЯ РАЗБИВКИ ДЛИННЫХ СООБЩЕНИЙ ====================
+
+async function sendLongMessage(chatId, text, options = {}) {
+  const MAX_LENGTH = 4096;
+  
+  if (text.length <= MAX_LENGTH) {
+    return await sendMessage(chatId, text, options);
+  }
+  
+  const parts = [];
+  let remainingText = text;
+  
+  while (remainingText.length > 0) {
+    let part = remainingText.slice(0, MAX_LENGTH);
+    
+    const lastNewline = part.lastIndexOf('\n');
+    if (lastNewline > 0 && remainingText.length > MAX_LENGTH) {
+      part = remainingText.slice(0, lastNewline);
+      remainingText = remainingText.slice(lastNewline);
+    } else {
+      remainingText = remainingText.slice(MAX_LENGTH);
+    }
+    
+    parts.push(part);
+  }
+  
+  for (let i = 0; i < parts.length; i++) {
+    const partText = i === 0 
+      ? parts[i] 
+      : `📌 <b>Продолжение (часть ${i + 1}/${parts.length}):</b>\n\n${parts[i]}`;
+    
+    await sendMessage(chatId, partText, options);
+    
+    if (i < parts.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  }
+  
+  return true;
+}
+
 // ==================== РАБОТА С БД ====================
 
 async function getUser(telegramId) {
@@ -163,7 +204,6 @@ async function getTodayPriceChanges() {
   try {
     const today = new Date().toISOString().split('T')[0];
     
-    // Получаем все записи за сегодня
     const result = await db.execute({
       sql: `
         SELECT 
@@ -186,14 +226,12 @@ async function getTodayPriceChanges() {
       args: [today]
     });
     
-    // Группируем по товарам и проверяем изменение цены
     const changesByProduct = {};
     
     result.rows.forEach(row => {
       const code = row.product_code;
       
       if (!changesByProduct[code]) {
-        // Проверяем, изменилась ли цена
         const priceChanged = Math.abs(row.new_price - row.old_price) > 0.01;
         
         if (priceChanged) {
@@ -206,7 +244,6 @@ async function getTodayPriceChanges() {
       }
     });
     
-    // Преобразуем в массив и сортируем по времени
     const filteredChanges = Object.values(changesByProduct)
       .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
     
@@ -231,7 +268,6 @@ async function showAddCategories(chatId) {
     const user = await getUser(chatId);
     const selectedCategories = user?.selected_categories || [];
 
-    // Создаем кнопки для каждой категории (только невыбранные)
     const buttons = [];
     const row = [];
     
@@ -253,7 +289,6 @@ async function showAddCategories(chatId) {
       buttons.push(row);
     }
 
-    // Если все категории уже выбраны
     if (buttons.length === 0 || (buttons.length === 1 && buttons[0].length === 0)) {
       buttons.length = 0;
     }
@@ -331,16 +366,13 @@ function formatProductSimple(product) {
 }
 
 function formatProductFull(product, oldPrice = null, newPrice = null, change = null, percent = null) {
-  // Определяем эмодзи (цвета через HTML не работают в Telegram)
   let changeEmoji = '🆕';
   let priceChangeHtml = '';
   
   if (oldPrice && newPrice) {
     if (Math.abs(newPrice - oldPrice) < 0.01) {
-      // Цена не изменилась
       priceChangeHtml = `\n💰 <b>Цена:</b> ${formatPrice(newPrice)} руб.`;
     } else {
-      // Цена изменилась - используем только эмодзи для обозначения направления
       const isDecrease = newPrice < oldPrice;
       const arrow = isDecrease ? '▼' : '▲';
       const sign = isDecrease ? '' : '+';
@@ -351,7 +383,6 @@ function formatProductFull(product, oldPrice = null, newPrice = null, change = n
         `\n💰 <b>Стало:</b> ${formatPrice(newPrice)} руб. ${arrow} ${sign}${change} (${sign}${percent}%)`;
     }
   } else {
-    // Нет сравнения - просто показываем текущую цену
     priceChangeHtml = `\n💰 <b>Цена:</b> ${formatPrice(product.last_price)} руб.`;
   }
 
@@ -480,14 +511,13 @@ async function handleMessage(message) {
         return;
       }
 
-      // Простой список товаров (только названия)
       const productList = allProducts
         .map(p => formatProductSimple(p))
         .join('\n');
 
       console.log(`📤 Отправка списка товаров, длина: ${productList.length}`);
 
-      await sendMessage(chatId, 
+      await sendLongMessage(chatId, 
         `📦 <b>Товары в выбранных категориях (${allProducts.length}):</b>\n\n${productList}`
       );
     } else if (text === '/last') {
@@ -502,7 +532,6 @@ async function handleMessage(message) {
         `📊 <b>Изменения цен за сегодня (${changes.length}):</b>`
       );
 
-      // Отправляем каждое изменение отдельным сообщением
       for (const change of changes) {
         const product = {
           name: change.product_name,
@@ -545,7 +574,6 @@ async function handleCallback(query) {
     const message = query.message;
     const fromId = query.from.id;
 
-    // ========== ДОБАВЛЕНИЕ КАТЕГОРИИ ==========
     if (data.startsWith('add_')) {
       const parts = data.split('_');
       const index = parseInt(parts[1]);
@@ -566,7 +594,6 @@ async function handleCallback(query) {
       return;
     }
 
-    // ========== УДАЛЕНИЕ КАТЕГОРИИ ==========
     if (data.startsWith('remove_')) {
       const parts = data.split('_');
       const index = parseInt(parts[1]);
@@ -584,14 +611,12 @@ async function handleCallback(query) {
       return;
     }
 
-    // ========== НАЗАД К ДОБАВЛЕНИЮ ==========
     if (data === 'back_to_add') {
       await answerCallback(query.id, '🔙 Возврат');
       await showAddCategories(message.chat.id);
       return;
     }
 
-    // ========== ГОТОВО (ЗАКРЫТЬ МЕНЮ) ==========
     if (data === 'done_adding') {
       const user = await getUser(fromId);
       const count = user?.selected_categories?.length || 0;
@@ -617,13 +642,11 @@ async function handleCallback(query) {
       return;
     }
 
-    // ========== ПРОВЕРКА ПРАВ ДЛЯ АДМИНСКИХ КНОПОК ==========
     if (fromId != ADMIN_CHAT_ID) {
       await answerCallback(query.id, '⛔ Нет прав');
       return;
     }
 
-    // ========== АДМИНСКИЕ КНОПКИ ==========
     if (data.startsWith('approve_')) {
       const userId = data.replace('approve_', '');
       const user = await getUser(userId);
