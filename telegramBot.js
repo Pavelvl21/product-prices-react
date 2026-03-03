@@ -154,6 +154,8 @@ async function getProductsByCategory(category) {
   }
 }
 
+// ==================== ОБНОВЛЕННАЯ ФУНКЦИЯ ПОКАЗА КАТЕГОРИЙ ====================
+
 async function showCategoriesWithMultiSelect(chatId, messageId = null) {
   try {
     const categories = await getAllCategories();
@@ -310,13 +312,7 @@ async function handleMessage(message) {
         `🆔 ID: <code>${userId}</code>${categoriesInfo}`
       );
     } else if (text === '/select') {
-        console.log('🎯 Обработка команды /select для пользователя:', userId);
-        console.log('📁 Статус пользователя:', user?.status);
-        console.log('📁 Вызов showCategoriesWithMultiSelect с chatId:', chatId);
-  
-        await showCategoriesWithMultiSelect(chatId);
-  
-        console.log('✅ showCategoriesWithMultiSelect выполнен');
+      await showCategoriesWithMultiSelect(chatId);
     } else if (text === '/goods') {
       const selectedCategories = user?.selected_categories || [];
       
@@ -368,28 +364,153 @@ ${fullLink ? `🔗 <a href="${fullLink}">Ссылка на товар</a>` : ''}
   }
 }
 
-// ==================== ПОЛНАЯ ФУНКЦИЯ ОБРАБОТКИ CALLBACK ====================
+// ==================== ОБРАБОТЧИК CALLBACK ====================
 
-if (data.startsWith('toggle_cat_')) {
-  console.log('🔍 Обработка toggle_cat');
-  const index = parseInt(data.replace('toggle_cat_', ''));
+async function handleCallback(query) {
+  console.log('📞 Callback получен:', query.data);
   
-  // Получаем актуальный список категорий
-  const categories = await getAllCategories();
-  const category = categories[index];
-  
-  if (!category) {
-    console.error('❌ Категория не найдена для индекса:', index);
-    await answerCallback(query.id, '❌ Ошибка: категория не найдена');
-    return;
+  try {
+    const data = query.data;
+    const message = query.message;
+    const fromId = query.from.id;
+
+    // Обработка выбора категории по ИНДЕКСУ
+    if (data.startsWith('toggle_cat_')) {
+      console.log('🔍 Обработка toggle_cat');
+      const index = parseInt(data.replace('toggle_cat_', ''));
+      
+      // Получаем актуальный список категорий
+      const categories = await getAllCategories();
+      const category = categories[index];
+      
+      if (!category) {
+        console.error('❌ Категория не найдена для индекса:', index);
+        await answerCallback(query.id, '❌ Ошибка: категория не найдена');
+        return;
+      }
+      
+      console.log('📁 Выбрана категория:', category, '(индекс:', index + ')');
+      
+      await toggleCategory(fromId, category);
+      await showCategoriesWithMultiSelect(message.chat.id, message.message_id);
+      await answerCallback(query.id, `🔄 Обновлено`);
+      return;
+    }
+
+    // Обработка кнопки "Выбрать все / Снять все"
+    if (data === 'toggle_all_categories') {
+      console.log('🔍 Обработка toggle_all');
+      const user = await getUser(fromId);
+      const allCategories = await getAllCategories();
+      const selectAll = (user?.selected_categories || []).length !== allCategories.length;
+      
+      await setAllCategories(fromId, selectAll);
+      await showCategoriesWithMultiSelect(message.chat.id, message.message_id);
+      await answerCallback(query.id, selectAll ? '✅ Все выбраны' : '🔲 Все сняты');
+      return;
+    }
+
+    // Обработка подтверждения выбора
+    if (data === 'confirm_categories') {
+      console.log('🔍 Обработка confirm');
+      const user = await getUser(fromId);
+      const count = user?.selected_categories?.length || 0;
+      
+      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: message.chat.id,
+          message_id: message.message_id,
+          reply_markup: { inline_keyboard: [] }
+        })
+      });
+
+      await sendMessage(message.chat.id, 
+        `✅ Выбрано категорий: ${count}\n\nТеперь можете использовать /goods для просмотра товаров из выбранных категорий.`
+      );
+      await answerCallback(query.id, '✅ Выбор сохранён');
+      return;
+    }
+
+    // Проверка прав для админских кнопок
+    if (fromId != ADMIN_CHAT_ID) {
+      await answerCallback(query.id, '⛔ Нет прав');
+      return;
+    }
+
+    // Админские кнопки
+    if (data.startsWith('approve_')) {
+      console.log('🔍 Обработка approve');
+      const userId = data.replace('approve_', '');
+      const user = await getUser(userId);
+      
+      if (user) {
+        await updateUserStatus(userId, 'approved', 'admin');
+        
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: message.chat.id,
+            message_id: message.message_id,
+            reply_markup: { inline_keyboard: [] }
+          })
+        });
+
+        await sendMessage(ADMIN_CHAT_ID, `✅ Пользователь ${userId} подтверждён`);
+        await sendMessage(user.chat_id, 
+          '✅ <b>Доступ подтверждён!</b>\n\nТеперь вы можете пользоваться ботом.\n/help'
+        );
+      }
+    } else if (data.startsWith('reject_')) {
+      console.log('🔍 Обработка reject');
+      const userId = data.replace('reject_', '');
+      const user = await getUser(userId);
+      
+      if (user) {
+        await updateUserStatus(userId, 'rejected', 'admin');
+        
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: message.chat.id,
+            message_id: message.message_id,
+            reply_markup: { inline_keyboard: [] }
+          })
+        });
+
+        await sendMessage(ADMIN_CHAT_ID, `❌ Пользователь ${userId} отклонён`);
+        await sendMessage(user.chat_id, '⛔ <b>Доступ отклонён</b>');
+      }
+    } else if (data.startsWith('block_')) {
+      console.log('🔍 Обработка block');
+      const userId = data.replace('block_', '');
+      const user = await getUser(userId);
+      
+      if (user) {
+        await updateUserStatus(userId, 'blocked', 'admin');
+        
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: message.chat.id,
+            message_id: message.message_id,
+            reply_markup: { inline_keyboard: [] }
+          })
+        });
+
+        await sendMessage(ADMIN_CHAT_ID, `🚫 Пользователь ${userId} заблокирован`);
+        await sendMessage(user.chat_id, '🚫 <b>Вы заблокированы</b>');
+      }
+    }
+
+    await answerCallback(query.id, '✅ Готово');
+  } catch (err) {
+    console.error('❌ Ошибка в handleCallback:', err);
   }
-  
-  console.log('📁 Выбрана категория:', category, '(индекс:', index + ')');
-  
-  await toggleCategory(fromId, category);
-  await showCategoriesWithMultiSelect(message.chat.id, message.message_id);
-  await answerCallback(query.id, `🔄 Обновлено`);
-  return;
 }
 
 // ==================== ПУБЛИЧНЫЕ ФУНКЦИИ ====================
