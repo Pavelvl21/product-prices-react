@@ -57,10 +57,13 @@ async function getUser(telegramId) {
     
     if (result.rows[0]) {
       const user = result.rows[0];
+      // Парсим JSON для совместимости со старыми данными, но теперь это будет простой массив
       try {
-        user.selected_categories = user.selected_categories 
-          ? JSON.parse(user.selected_categories) 
-          : [];
+        if (user.selected_categories) {
+          user.selected_categories = JSON.parse(user.selected_categories);
+        } else {
+          user.selected_categories = [];
+        }
       } catch (e) {
         user.selected_categories = [];
       }
@@ -155,9 +158,9 @@ async function getProductsByCategory(category) {
   }
 }
 
-// ==================== НОВАЯ ФУНКЦИЯ ПОКАЗА КАТЕГОРИЙ ====================
+// ==================== НОВАЯ ФУНКЦИЯ ПОКАЗА КАТЕГОРИЙ ДЛЯ ДОБАВЛЕНИЯ ====================
 
-async function showCategoriesSimple(chatId) {
+async function showAddCategories(chatId) {
   try {
     const categories = await getAllCategories();
     
@@ -169,28 +172,99 @@ async function showCategoriesSimple(chatId) {
     const user = await getUser(chatId);
     const selectedCategories = user?.selected_categories || [];
 
-    // Создаем кнопки с ИНДЕКСАМИ (только цифры)
-    const buttons = categories.map((cat, index) => [{
-      text: cat,
-      callback_data: `idx_${index}`  // ← только индекс, без русских букв
-    }]);
+    // Создаем кнопки для каждой категории (только невыбранные)
+    const buttons = [];
+    const row = [];
+    
+    categories.forEach((cat, index) => {
+      // Пропускаем уже выбранные категории
+      if (selectedCategories.includes(cat)) return;
+      
+      row.push({
+        text: cat,
+        callback_data: `add_${index}_${cat}`
+      });
+      
+      // По 2 кнопки в ряд
+      if (row.length === 2) {
+        buttons.push([...row]);
+        row.length = 0;
+      }
+    });
+    
+    // Добавляем оставшиеся кнопки
+    if (row.length > 0) {
+      buttons.push(row);
+    }
 
-    // Кнопка подтверждения
+    // Кнопка готово
     buttons.push([{
-      text: '✅ Подтвердить выбор',
-      callback_data: 'confirm_sel'
+      text: '✅ Готово',
+      callback_data: 'done_adding'
     }]);
 
     const selectedText = selectedCategories.length > 0 
-      ? `\n\n<b>Выбрано:</b>\n${selectedCategories.map(c => `• ${c}`).join('\n')}`
-      : '';
+      ? `\n\n<b>Выбранные категории:</b>\n${selectedCategories.map(c => `✅ ${c}`).join('\n')}` 
+      : '\n\n⚠️ Пока не выбрано ни одной категории';
 
-    await sendMessage(chatId, `📁 Выберите категории${selectedText}`, { 
-      reply_markup: { inline_keyboard: buttons },
-      parse_mode: 'HTML'
-    });
+    await sendMessage(chatId, 
+      `📁 <b>Добавление категорий</b>\n` +
+      `Нажмите на категорию, чтобы добавить её в список отслеживания.${selectedText}`, 
+      { 
+        reply_markup: { inline_keyboard: buttons },
+        parse_mode: 'HTML'
+      }
+    );
   } catch (err) {
-    console.error('Ошибка в showCategoriesSimple:', err);
+    console.error('Ошибка в showAddCategories:', err);
+  }
+}
+
+// ==================== НОВАЯ ФУНКЦИЯ ПОКАЗА АКТИВНЫХ КАТЕГОРИЙ ====================
+
+async function showActiveCategories(chatId) {
+  try {
+    const user = await getUser(chatId);
+    const selectedCategories = user?.selected_categories || [];
+    
+    if (selectedCategories.length === 0) {
+      await sendMessage(chatId, 
+        '📭 У вас нет выбранных категорий.\n' +
+        'Используйте /add чтобы добавить категории.'
+      );
+      return;
+    }
+
+    // Создаем кнопки для удаления категорий
+    const buttons = [];
+    const row = [];
+    
+    selectedCategories.forEach((cat, index) => {
+      row.push({
+        text: `❌ ${cat}`,
+        callback_data: `remove_${index}_${cat}`
+      });
+      
+      // По 1 кнопке в ряд для удобства
+      buttons.push([...row]);
+      row.length = 0;
+    });
+
+    buttons.push([{
+      text: '🔙 Назад',
+      callback_data: 'back_to_add'
+    }]);
+
+    await sendMessage(chatId, 
+      `📋 <b>Ваши категории (${selectedCategories.length})</b>\n` +
+      `Нажмите на категорию чтобы удалить её.`, 
+      { 
+        reply_markup: { inline_keyboard: buttons },
+        parse_mode: 'HTML'
+      }
+    );
+  } catch (err) {
+    console.error('Ошибка в showActiveCategories:', err);
   }
 }
 
@@ -239,7 +313,14 @@ async function handleMessage(message) {
         );
         await notifyAdminAboutNewUser(userId, username, firstName, chatId);
       } else if (user.status === 'approved') {
-        await sendMessage(chatId, '👋 С возвращением!\n\n/help - список команд');
+        await sendMessage(chatId, 
+          '👋 С возвращением!\n\n' +
+          '📋 <b>Команды:</b>\n' +
+          '/add - добавить категории для отслеживания\n' +
+          '/list - показать выбранные категории\n' +
+          '/goods - показать товары из выбранных категорий\n' +
+          '/help - список всех команд'
+        );
       } else if (user.status === 'pending') {
         await sendMessage(chatId, '⏳ Запрос ещё рассматривается');
       } else {
@@ -256,7 +337,8 @@ async function handleMessage(message) {
         '/start - приветствие\n' +
         '/help - это сообщение\n' +
         '/status - проверить статус\n' +
-        '/select - выбрать категории товаров\n' +
+        '/add - добавить категории для отслеживания\n' +
+        '/list - показать выбранные категории\n' +
         '/goods - показать товары из выбранных категорий'
       );
     } else if (text === '/status') {
@@ -269,13 +351,15 @@ async function handleMessage(message) {
         `✅ <b>Статус:</b> подтверждён\n` +
         `🆔 ID: <code>${userId}</code>${categoriesInfo}`
       );
-    } else if (text === '/select') {
-      await showCategoriesSimple(chatId);
+    } else if (text === '/add') {
+      await showAddCategories(chatId);
+    } else if (text === '/list') {
+      await showActiveCategories(chatId);
     } else if (text === '/goods') {
       const selectedCategories = user?.selected_categories || [];
       
       if (selectedCategories.length === 0) {
-        await sendMessage(chatId, '❌ Сначала выберите категории через /select');
+        await sendMessage(chatId, '❌ Сначала выберите категории через /add');
         return;
       }
 
@@ -332,24 +416,61 @@ async function handleCallback(query) {
     const message = query.message;
     const fromId = query.from.id;
 
-    // ========== ОБРАБОТЧИК ВЫБОРА КАТЕГОРИИ ПО ИНДЕКСУ ==========
-    if (data.startsWith('idx_')) {
-      const index = parseInt(data.replace('idx_', ''));
-      const categories = await getAllCategories();
-      const category = categories[index];
+    // ========== ДОБАВЛЕНИЕ КАТЕГОРИИ ==========
+    if (data.startsWith('add_')) {
+      const parts = data.split('_');
+      const index = parseInt(parts[1]);
+      // Восстанавливаем категорию (она могла содержать пробелы)
+      const category = parts.slice(2).join('_');
       
-      if (category) {
-        await answerCallback(query.id, `✅ ${category}`);
-        await toggleCategory(fromId, category);
-        await showCategoriesSimple(message.chat.id);
+      const categories = await getAllCategories();
+      const user = await getUser(fromId);
+      const selectedCategories = user?.selected_categories || [];
+      
+      // Добавляем категорию, если её ещё нет
+      if (!selectedCategories.includes(category)) {
+        selectedCategories.push(category);
+        await updateUserCategories(fromId, selectedCategories);
+        await answerCallback(query.id, `✅ ${category} добавлена`);
       } else {
-        await answerCallback(query.id, '❌ Ошибка');
+        await answerCallback(query.id, `⚠️ Уже добавлена`);
       }
+      
+      // Показываем обновленный список
+      await showAddCategories(message.chat.id);
       return;
     }
 
-    // ========== ПОДТВЕРЖДЕНИЕ ВЫБОРА КАТЕГОРИЙ ==========
-    if (data === 'confirm_sel') {
+    // ========== УДАЛЕНИЕ КАТЕГОРИИ ==========
+    if (data.startsWith('remove_')) {
+      const parts = data.split('_');
+      const index = parseInt(parts[1]);
+      // Восстанавливаем категорию
+      const category = parts.slice(2).join('_');
+      
+      const user = await getUser(fromId);
+      const selectedCategories = user?.selected_categories || [];
+      
+      // Удаляем категорию
+      const newCategories = selectedCategories.filter(c => c !== category);
+      await updateUserCategories(fromId, newCategories);
+      
+      await answerCallback(query.id, `❌ ${category} удалена`);
+      
+      // Показываем обновленный список
+      await showActiveCategories(message.chat.id);
+      return;
+    }
+
+    // ========== НАЗАД К ДОБАВЛЕНИЮ ==========
+    if (data === 'back_to_add') {
+      await answerCallback(query.id, '🔙 Возврат');
+      await showAddCategories(message.chat.id);
+      return;
+    }
+
+    // ========== ГОТОВО (ЗАКРЫТЬ МЕНЮ) ==========
+    if (data === 'done_adding') {
       const user = await getUser(fromId);
       const count = user?.selected_categories?.length || 0;
       
@@ -367,7 +488,9 @@ async function handleCallback(query) {
       });
 
       await sendMessage(message.chat.id, 
-        `✅ Выбрано категорий: ${count}\n\nИспользуйте /goods для просмотра товаров.`
+        `✅ Выбрано категорий: ${count}\n\n` +
+        `Используйте /list чтобы увидеть список\n` +
+        `/goods для просмотра товаров.`
       );
       return;
     }
@@ -398,7 +521,12 @@ async function handleCallback(query) {
 
         await sendMessage(ADMIN_CHAT_ID, `✅ Пользователь ${userId} подтверждён`);
         await sendMessage(user.chat_id, 
-          '✅ <b>Доступ подтверждён!</b>\n\nТеперь вы можете пользоваться ботом.\n/help'
+          '✅ <b>Доступ подтверждён!</b>\n\n' +
+          '📋 <b>Команды:</b>\n' +
+          '/add - добавить категории для отслеживания\n' +
+          '/list - показать выбранные категории\n' +
+          '/goods - показать товары из выбранных категорий\n' +
+          '/help - список всех команд'
         );
         await answerCallback(query.id, '✅ Подтверждено');
       }
