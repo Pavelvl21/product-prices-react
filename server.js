@@ -26,13 +26,16 @@ await initTables();
 app.use(express.json());
 app.use(express.static('public'));
 
+// CORS для фронта
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', 'https://price-hunter-bel.vercel.app');
   res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-secret-key, cache-control, pragma, expires, if-none-match, if-modified-since');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-secret-key, x-bot-key, cache-control, pragma, expires, if-none-match, if-modified-since');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
+
+// ==================== МИДЛВАРЫ ====================
 
 function authenticateToken(req, res, next) {
   const token = req.headers['authorization']?.split(' ')[1];
@@ -45,6 +48,16 @@ function authenticateToken(req, res, next) {
   });
 }
 
+function authenticateBot(req, res, next) {
+  const botKey = req.headers['x-bot-key'];
+  if (!botKey || botKey !== MY_SECRET_KEY) {
+    return res.status(403).json({ error: 'Доступ запрещен' });
+  }
+  next();
+}
+
+// ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
+
 function validateProductCode(code) {
   return /^\d{1,12}$/.test(code);
 }
@@ -53,6 +66,8 @@ function validateEmail(email) {
   const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return re.test(email);
 }
+
+// ==================== ПУБЛИЧНЫЕ ЭНДПОИНТЫ ====================
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -118,12 +133,15 @@ app.post('/api/login', async (req, res) => {
   res.json({ token });
 });
 
-app.post('/api/allowed-emails', async (req, res) => {
-  if (req.headers['x-secret-key'] !== MY_SECRET_KEY) {
-    return res.status(403).json({ error: 'Доступ запрещен' });
+// ==================== ЭНДПОИНТЫ ДЛЯ АДМИНА (С SECRET_KEY) ====================
+
+app.post('/api/allowed-emails', authenticateBot, async (req, res) => {
+  const { email } = req.body;
+  
+  if (!email || !validateEmail(email)) {
+    return res.status(400).json({ error: 'Некорректный email' });
   }
 
-  const { email } = req.body;
   await db.execute({
     sql: 'INSERT INTO allowed_emails (email) VALUES (?) ON CONFLICT(email) DO NOTHING',
     args: [email]
@@ -132,12 +150,7 @@ app.post('/api/allowed-emails', async (req, res) => {
   res.json({ message: 'Email добавлен' });
 });
 
-app.get('/api/allowed-emails', async (req, res) => {
-  const userKey = req.headers['x-secret-key'];
-  if (!userKey || userKey !== MY_SECRET_KEY) {
-    return res.status(403).json({ error: 'Доступ запрещен' });
-  }
-
+app.get('/api/allowed-emails', authenticateBot, async (req, res) => {
   try {
     const result = await db.execute('SELECT email, created_at FROM allowed_emails ORDER BY created_at DESC');
     res.json(result.rows);
@@ -146,6 +159,99 @@ app.get('/api/allowed-emails', async (req, res) => {
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
+
+// ==================== ЭНДПОИНТ ДЛЯ БОТА (ТОЖЕ С SECRET_KEY) ====================
+
+app.get('/api/bot/products', authenticateBot, async (req, res) => {
+  try {
+    // Получаем все товары
+    const products = await db.execute('SELECT * FROM products_info');
+    
+    // Получаем все даты за последние 90 дней
+    const dates = await db.execute(`
+      SELECT DISTINCT DATE(updated_at) as d
+      FROM price_history
+      WHERE updated_at >= datetime('now', '-90 days')
+      ORDER BY d DESC
+    `);
+    
+    const allDates = dates.rows.map(row => row.d);
+    const today = allDates[0];
+    const yesterday = allDates[1];
+    
+    // Получаем последние цены за сегодня и вчера для каждого товара
+    const todayPrices = await db.execute({
+      sql: `
+        SELECT ph.product_code, ph.price
+        FROM price_history ph
+        INNER JOIN (
+          SELECT product_code, MAX(updated_at) as max_date
+          FROM price_history
+          WHERE DATE(updated_at) = ?
+          GROUP BY product_code
+        ) latest ON ph.product_code = latest.product_code AND ph.updated_at = latest.max_date
+      `,
+      args: [today]
+    });
+    
+    const yesterdayPrices = await db.execute({
+      sql: `
+        SELECT ph.product_code, ph.price
+        FROM price_history ph
+        INNER JOIN (
+          SELECT product_code, MAX(updated_at) as max_date
+          FROM price_history
+          WHERE DATE(updated_at) = ?
+          GROUP BY product_code
+        ) latest ON ph.product_code = latest.product_code AND ph.updated_at = latest.max_date
+      `,
+      args: [yesterday]
+    });
+    
+    // Создаем удобные мапы
+    const todayMap = {};
+    todayPrices.rows.forEach(row => {
+      todayMap[row.product_code] = row.price;
+    });
+    
+    const yesterdayMap = {};
+    yesterdayPrices.rows.forEach(row => {
+      yesterdayMap[row.product_code] = row.price;
+    });
+    
+    // Формируем результат
+    const result = products.rows.map(product => {
+      const priceToday = todayMap[product.code];
+      const priceYesterday = yesterdayMap[product.code];
+      
+      return {
+        code: product.code,
+        name: product.name,
+        link: product.link,
+        category: product.category || 'Товары',
+        brand: product.brand || 'Без бренда',
+        packPrice: product.packPrice,
+        monthly_payment: product.monthly_payment,
+        no_overpayment_max_months: product.no_overpayment_max_months,
+        priceToday: priceToday || null,
+        priceYesterday: priceYesterday || null,
+        lastUpdate: product.last_update
+      };
+    });
+    
+    res.json({ 
+      today,
+      yesterday,
+      products: result 
+    });
+    
+  } catch (err) {
+    console.error('Ошибка в /api/bot/products:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==================== ЗАЩИЩЕННЫЕ ЭНДПОИНТЫ (ДЛЯ ФРОНТА) ====================
 
 app.get('/api/codes', authenticateToken, async (req, res) => {
   const result = await db.execute('SELECT code FROM product_codes ORDER BY created_at DESC');
@@ -237,7 +343,6 @@ app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== ИСПРАВЛЕННЫЙ ЭНДПОИНТ ====================
 app.get('/api/products', authenticateToken, async (req, res) => {
   const products = await db.execute('SELECT * FROM products_info');
   
@@ -271,8 +376,8 @@ app.get('/api/products', authenticateToken, async (req, res) => {
   const result = products.rows.map(p => {
     const allProductHistory = historyByProduct[p.code] || [];
     
-    // Для таблицы - цены по дням (prices)
     const prices = {};
+    
     allDates.forEach(date => {
       const dayRecords = allProductHistory.filter(h => h.date.startsWith(date));
       if (dayRecords.length > 0) {
@@ -285,32 +390,13 @@ app.get('/api/products', authenticateToken, async (req, res) => {
       }
     });
 
-    // ДЛЯ ГРАФИКА И ИСТОРИИ - все дни подряд (priceHistory)
-    const dailyHistory = [];
+    const filteredHistory = [];
+    let lastPrice = null;
     
-    allDates.forEach(date => {
-      const dayRecords = allProductHistory.filter(h => h.date.startsWith(date));
-      
-      if (dayRecords.length > 0) {
-        // Если есть запись за день - берем последнюю с реальным временем
-        const lastRecord = dayRecords.sort((a, b) => 
-          new Date(b.date) - new Date(a.date)
-        )[0];
-        dailyHistory.push({
-          date: lastRecord.date, // сохраняем реальное время
-          price: lastRecord.price
-        });
-      } else {
-        // Если нет записи - берем последнюю известную цену и ставим полночь
-        const prevRecords = allProductHistory.filter(h => h.date < date)
-          .sort((a, b) => new Date(b.date) - new Date(a.date));
-        
-        if (prevRecords.length > 0) {
-          dailyHistory.push({
-            date: date + ' 00:00:00', // искусственная запись в полночь
-            price: prevRecords[0].price
-          });
-        }
+    allProductHistory.forEach(record => {
+      if (lastPrice === null || Math.abs(record.price - lastPrice) > 0.01) {
+        filteredHistory.push(record);
+        lastPrice = record.price;
       }
     });
 
@@ -324,7 +410,7 @@ app.get('/api/products', authenticateToken, async (req, res) => {
       monthly_payment: p.monthly_payment,
       no_overpayment_max_months: p.no_overpayment_max_months,
       prices: prices,
-      priceHistory: dailyHistory, // ТЕПЕРЬ ЗДЕСЬ ВСЕ ДНИ ПОДРЯД
+      priceHistory: filteredHistory,
       currentPrice: p.last_price,
       lastUpdate: p.last_update
     };
@@ -361,6 +447,8 @@ app.get('/api/stats', authenticateToken, async (req, res) => {
   }
 });
 
+// ==================== ТЕЛЕГРАМ БОТ ====================
+
 setupBotEndpoints(app, authenticateToken);
 
 app.post('/api/telegram/webhook', async (req, res) => {
@@ -372,6 +460,8 @@ app.post('/api/telegram/webhook', async (req, res) => {
     res.sendStatus(500);
   }
 });
+
+// ==================== ПЛАНИРОВЩИКИ ====================
 
 const schedule = [
   '30 0 * * *', '30 1 * * *', '30 6 * * *', '30 8 * * *',
