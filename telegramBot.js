@@ -18,7 +18,7 @@ async function sendMessage(chatId, text, options = {}) {
         chat_id: chatId,
         text: text,
         parse_mode: 'HTML',
-        disable_web_page_preview: true, // отключаем превью ссылок
+        disable_web_page_preview: true,
         ...options
       })
     });
@@ -199,55 +199,60 @@ async function getProductsByCategory(category) {
   }
 }
 
-// ==================== ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИЗМЕНЕНИЙ ЗА СЕГОДНЯ ====================
+// ==================== НОВАЯ ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИЗМЕНЕНИЙ ЗА ПОСЛЕДНИЕ 24 ЧАСА ====================
 
-async function getTodayPriceChanges() {
+async function getRecentPriceChanges() {
   try {
-    const today = new Date().toISOString().split('T')[0];
-    
-    // Получаем ПОСЛЕДНЮЮ запись за сегодня для каждого товара
+    // Получаем последние 2 записи для каждого товара за последние 2 дня
     const result = await db.execute({
       sql: `
+        WITH ranked_prices AS (
+          SELECT 
+            product_code,
+            product_name,
+            price,
+            updated_at,
+            ROW_NUMBER() OVER (PARTITION BY product_code ORDER BY updated_at DESC) as rn
+          FROM price_history
+          WHERE updated_at >= datetime('now', '-2 days')
+        )
         SELECT 
-          ph.product_code,
-          ph.product_name,
-          ph.price as new_price,
-          ph.updated_at,
-          pi.last_price as old_price,
+          r1.product_code,
+          r1.product_name,
+          r1.price as current_price,
+          r1.updated_at as current_date,
+          r2.price as previous_price,
+          r2.updated_at as previous_date,
           pi.packPrice,
           pi.monthly_payment,
           pi.no_overpayment_max_months,
           pi.link,
           pi.category,
           pi.brand
-        FROM price_history ph
-        JOIN products_info pi ON ph.product_code = pi.code
-        WHERE (ph.product_code, ph.updated_at) IN (
-          SELECT product_code, MAX(updated_at)
-          FROM price_history
-          WHERE DATE(updated_at) = ?
-          GROUP BY product_code
-        )
-        ORDER BY ph.updated_at DESC
-      `,
-      args: [today]
+        FROM ranked_prices r1
+        LEFT JOIN ranked_prices r2 ON r1.product_code = r2.product_code AND r2.rn = 2
+        JOIN products_info pi ON r1.product_code = pi.code
+        WHERE r1.rn = 1
+        ORDER BY r1.updated_at DESC
+      `
     });
     
-    // Фильтруем только те, где цена действительно изменилась
+    // Фильтруем только те, где цена изменилась
     const changes = result.rows
-      .filter(row => Math.abs(row.new_price - row.old_price) > 0.01)
+      .filter(row => row.previous_price && Math.abs(row.current_price - row.previous_price) > 0.01)
       .map(row => ({
         ...row,
-        change: row.new_price - row.old_price,
-        percent: ((row.new_price - row.old_price) / row.old_price * 100).toFixed(1)
+        change: row.current_price - row.previous_price,
+        percent: ((row.current_price - row.previous_price) / row.previous_price * 100).toFixed(1)
       }));
     
     return changes;
   } catch (err) {
-    console.error('Ошибка получения изменений за сегодня:', err);
+    console.error('Ошибка получения изменений:', err);
     return [];
   }
 }
+
 // ==================== ФУНКЦИИ ПОКАЗА КАТЕГОРИЙ ====================
 
 async function showAddCategories(chatId) {
@@ -370,11 +375,9 @@ function formatProductFull(product, oldPrice = null, newPrice = null, change = n
       const isDecrease = newPrice < oldPrice;
       const sign = isDecrease ? '' : '+';
       
-      // 🔴 для снижения, 🟢 для повышения
       const circleEmoji = isDecrease ? '🔴' : '🟢';
-      changeEmoji = circleEmoji; // для заголовка
+      changeEmoji = circleEmoji;
       
-      // Добавляем кружок и в строку со "Стало"
       priceChangeHtml = `\n💰 <b>Было:</b> ${formatPrice(oldPrice)} руб.` +
         `\n💰 <b>Стало:</b> ${formatPrice(newPrice)} руб. ${circleEmoji} ${sign}${change} (${sign}${percent}%)`;
     }
@@ -445,7 +448,7 @@ async function handleMessage(message) {
           '/add - добавить категории для отслеживания\n' +
           '/list - показать выбранные категории\n' +
           '/goods - показать список товаров\n' +
-          '/last - изменения цен за сегодня\n' +
+          '/last - изменения цен за последние 24 часа\n' +
           '/help - список всех команд'
         );
       } else if (user.status === 'pending') {
@@ -467,7 +470,7 @@ async function handleMessage(message) {
         '/add - добавить категории для отслеживания\n' +
         '/list - показать выбранные категории\n' +
         '/goods - показать список товаров (только названия)\n' +
-        '/last - показать изменения цен за сегодня'
+        '/last - показать изменения цен за последние 24 часа'
       );
     } else if (text === '/status') {
       const categories = user.selected_categories || [];
@@ -516,22 +519,22 @@ async function handleMessage(message) {
         `📦 <b>Товары в выбранных категориях (${allProducts.length}):</b>\n\n${productList}`
       );
     } else if (text === '/last') {
-      const changes = await getTodayPriceChanges();
+      const changes = await getRecentPriceChanges();
       
       if (changes.length === 0) {
-        await sendMessage(chatId, '📭 За сегодня изменений цен не было');
+        await sendMessage(chatId, '📭 За последние 24 часа изменений цен не было');
         return;
       }
 
       await sendMessage(chatId, 
-        `📊 <b>Изменения цен за сегодня (${changes.length}):</b>`
+        `📊 <b>Изменения цен за последние 24 часа (${changes.length}):</b>`
       );
 
       for (const change of changes) {
         const product = {
           name: change.product_name,
           code: change.product_code,
-          last_price: change.old_price,
+          last_price: change.previous_price,
           packPrice: change.packPrice,
           monthly_payment: change.monthly_payment,
           no_overpayment_max_months: change.no_overpayment_max_months,
@@ -542,8 +545,8 @@ async function handleMessage(message) {
 
         const message = formatProductFull(
           product, 
-          change.old_price, 
-          change.new_price,
+          change.previous_price, 
+          change.current_price,
           change.change.toFixed(2).replace('.', ','),
           change.percent.replace('.', ',')
         );
@@ -632,7 +635,7 @@ async function handleCallback(query) {
         `✅ Выбрано категорий: ${count}\n\n` +
         `Используйте /list чтобы увидеть список\n` +
         `/goods для просмотра товаров\n` +
-        `/last для просмотра изменений за сегодня.`
+        `/last для просмотра изменений за последние 24 часа.`
       );
       return;
     }
@@ -666,7 +669,7 @@ async function handleCallback(query) {
           '/add - добавить категории для отслеживания\n' +
           '/list - показать выбранные категории\n' +
           '/goods - показать список товаров\n' +
-          '/last - изменения цен за сегодня\n' +
+          '/last - изменения цен за последние 24 часа\n' +
           '/help - список всех команд'
         );
         await answerCallback(query.id, '✅ Подтверждено');
