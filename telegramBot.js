@@ -481,7 +481,7 @@ async function handleCallback(query) {
   await answerCallback(query.id, '❓ Неизвестная команда');
 }
 
-// ==================== ПУБЛИЧНЫЕ ФУНКЦИИ ====================
+// ==================== ЭКСПОРТЫ ====================
 
 export async function handleTelegramUpdate(update) {
   try {
@@ -514,7 +514,10 @@ export function setupBotEndpoints(app, authenticateToken) {
   });
 }
 
-// ==================== ЭКСПОРТ ДЛЯ УВЕДОМЛЕНИЙ (НУЖЕН priceUpdater.js) ====================
+// ⚠️ ВАЖНО: Эти два экспорта нужны для priceUpdater.js
+export async function sendTelegramMessage(message) {
+  return await sendMessage(ADMIN_CHAT_ID, message);
+}
 
 export function formatPriceChangeNotification(product, oldPrice, newPrice) {
   const change = newPrice - oldPrice;
