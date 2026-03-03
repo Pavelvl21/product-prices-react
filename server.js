@@ -237,6 +237,7 @@ app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
   }
 });
 
+// ==================== ИСПРАВЛЕННЫЙ ЭНДПОИНТ ====================
 app.get('/api/products', authenticateToken, async (req, res) => {
   const products = await db.execute('SELECT * FROM products_info');
   
@@ -270,8 +271,8 @@ app.get('/api/products', authenticateToken, async (req, res) => {
   const result = products.rows.map(p => {
     const allProductHistory = historyByProduct[p.code] || [];
     
+    // Для таблицы - цены по дням (prices)
     const prices = {};
-    
     allDates.forEach(date => {
       const dayRecords = allProductHistory.filter(h => h.date.startsWith(date));
       if (dayRecords.length > 0) {
@@ -284,13 +285,32 @@ app.get('/api/products', authenticateToken, async (req, res) => {
       }
     });
 
-    const filteredHistory = [];
-    let lastPrice = null;
+    // ДЛЯ ГРАФИКА И ИСТОРИИ - все дни подряд (priceHistory)
+    const dailyHistory = [];
     
-    allProductHistory.forEach(record => {
-      if (lastPrice === null || Math.abs(record.price - lastPrice) > 0.01) {
-        filteredHistory.push(record);
-        lastPrice = record.price;
+    allDates.forEach(date => {
+      const dayRecords = allProductHistory.filter(h => h.date.startsWith(date));
+      
+      if (dayRecords.length > 0) {
+        // Если есть запись за день - берем последнюю с реальным временем
+        const lastRecord = dayRecords.sort((a, b) => 
+          new Date(b.date) - new Date(a.date)
+        )[0];
+        dailyHistory.push({
+          date: lastRecord.date, // сохраняем реальное время
+          price: lastRecord.price
+        });
+      } else {
+        // Если нет записи - берем последнюю известную цену и ставим полночь
+        const prevRecords = allProductHistory.filter(h => h.date < date)
+          .sort((a, b) => new Date(b.date) - new Date(a.date));
+        
+        if (prevRecords.length > 0) {
+          dailyHistory.push({
+            date: date + ' 00:00:00', // искусственная запись в полночь
+            price: prevRecords[0].price
+          });
+        }
       }
     });
 
@@ -304,7 +324,7 @@ app.get('/api/products', authenticateToken, async (req, res) => {
       monthly_payment: p.monthly_payment,
       no_overpayment_max_months: p.no_overpayment_max_months,
       prices: prices,
-      priceHistory: filteredHistory,
+      priceHistory: dailyHistory, // ТЕПЕРЬ ЗДЕСЬ ВСЕ ДНИ ПОДРЯД
       currentPrice: p.last_price,
       lastUpdate: p.last_update
     };
