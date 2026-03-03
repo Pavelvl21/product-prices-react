@@ -199,14 +199,14 @@ async function getProductsByCategory(category) {
   }
 }
 
-// ==================== ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИЗМЕНЕНИЙ (КАК НА СЕРВЕРЕ) ====================
+// ==================== ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИЗМЕНЕНИЙ КАК НА ФРОНТЕ ====================
 
-async function getPriceChanges() {
+async function getChangesLikeFrontend() {
   try {
     const today = new Date().toISOString().split('T')[0];
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     
-    console.log(`📅 Сегодня: ${today}, Вчера: ${yesterday}`);
+    console.log(`📅 Сравниваем ${today} с ${yesterday}`);
     
     const result = await db.execute({
       sql: `
@@ -229,15 +229,10 @@ async function getPriceChanges() {
       args: [today, yesterday]
     });
     
-    console.log(`📊 Найдено товаров с ценами: ${result.rows.length}`);
+    console.log(`📊 Найдено товаров: ${result.rows.length}`);
     
     const changes = result.rows
-      .filter(row => {
-        // Проверяем, что есть обе цены и они действительно разные
-        const hasBoth = row.price_today && row.price_yesterday;
-        const isDifferent = hasBoth && Math.abs(row.price_today - row.price_yesterday) > 0.01;
-        return isDifferent;
-      })
+      .filter(row => row.price_today && row.price_yesterday)
       .map(row => {
         const change = row.price_today - row.price_yesterday;
         const percent = (change / row.price_yesterday * 100).toFixed(1);
@@ -258,9 +253,16 @@ async function getPriceChanges() {
           isDecrease: change < 0
         };
       })
-      .sort((a, b) => Math.abs(b.change) - Math.abs(a.change)); // Сортируем по размеру изменения
+      .filter(row => Math.abs(row.change) > 0.01)
+      .sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
     
-    console.log(`✅ Найдено изменений: ${changes.length}`);
+    console.log(`✅ Изменений найдено: ${changes.length}`);
+    
+    // Для отладки выведем первые 3 изменения
+    changes.slice(0, 3).forEach(c => {
+      console.log(`${c.product_code}: ${c.previous_price} → ${c.current_price} (${c.change})`);
+    });
+    
     return changes;
   } catch (err) {
     console.error('❌ Ошибка получения изменений:', err);
@@ -384,17 +386,11 @@ function formatProductFull(product) {
   const sign = isDecrease ? '' : '+';
   const circleEmoji = isDecrease ? '🔴' : '🟢';
   
-  // Форматируем числа
-  const currentPrice = formatPrice(product.current_price);
-  const previousPrice = formatPrice(product.previous_price);
-  const changeValue = formatPrice(Math.abs(product.change));
-  const percentValue = product.percent.replace('.', ',');
-
   return `
 ${circleEmoji} <b>${product.product_name}</b>
 📋 Код: <code>${product.product_code}</code>
-💰 <b>Было:</b> ${previousPrice} руб.
-💰 <b>Стало:</b> ${currentPrice} руб. ${circleEmoji} ${sign}${changeValue} (${sign}${percentValue}%)
+💰 <b>Было:</b> ${formatPrice(product.previous_price)} руб.
+💰 <b>Стало:</b> ${formatPrice(product.current_price)} руб. ${circleEmoji} ${sign}${formatPrice(Math.abs(product.change))} (${sign}${product.percent}%)
 💳 РЦ в рассрочку: ${formatPrice(product.packPrice)} руб.
 📆 Платеж: ${product.monthly_payment || '—'} руб./мес
 ⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
@@ -455,7 +451,7 @@ async function handleMessage(message) {
           '/add - добавить категории для отслеживания\n' +
           '/list - показать выбранные категории\n' +
           '/goods - показать список товаров\n' +
-          '/changes - изменения цен сегодня vs вчера\n' +
+          '/changes - изменения цен (как на сайте)\n' +
           '/help - список всех команд'
         );
       } else if (user.status === 'pending') {
@@ -477,7 +473,7 @@ async function handleMessage(message) {
         '/add - добавить категории для отслеживания\n' +
         '/list - показать выбранные категории\n' +
         '/goods - показать список товаров (только названия)\n' +
-        '/changes - показать изменения цен (сегодня vs вчера)'
+        '/changes - показать изменения цен (как на сайте)'
       );
     } else if (text === '/status') {
       const categories = user.selected_categories || [];
@@ -496,6 +492,8 @@ async function handleMessage(message) {
     } else if (text === '/goods') {
       const selectedCategories = user?.selected_categories || [];
       
+      console.log(`📦 /goods: выбранные категории ${JSON.stringify(selectedCategories)}`);
+      
       if (selectedCategories.length === 0) {
         await sendMessage(chatId, '❌ Сначала выберите категории через /add');
         return;
@@ -503,7 +501,9 @@ async function handleMessage(message) {
 
       let allProducts = [];
       for (const category of selectedCategories) {
+        console.log(`🔍 Получение товаров для категории: ${category}`);
         const products = await getProductsByCategory(category);
+        console.log(`📦 Найдено товаров в категории ${category}: ${products.length}`);
         allProducts = [...allProducts, ...products];
       }
       
@@ -516,24 +516,25 @@ async function handleMessage(message) {
         .map(p => formatProductSimple(p))
         .join('\n');
 
+      console.log(`📤 Отправка списка товаров, длина: ${productList.length}`);
+
       await sendLongMessage(chatId, 
         `📦 <b>Товары в выбранных категориях (${allProducts.length}):</b>\n\n${productList}`
       );
     } else if (text === '/changes') {
-      const changes = await getPriceChanges();
+      const changes = await getChangesLikeFrontend();
       
       if (changes.length === 0) {
-        await sendMessage(chatId, '📭 Изменений цен (сегодня vs вчера) не найдено');
+        await sendMessage(chatId, '📭 За последние 24 часа изменений цен не было');
         return;
       }
 
       await sendMessage(chatId, 
-        `📊 <b>Изменения цен (сегодня vs вчера) (${changes.length}):</b>`
+        `📊 <b>Изменения цен за сегодня (${changes.length}):</b>`
       );
 
       for (const change of changes) {
-        const message = formatProductFull(change);
-        await sendMessage(chatId, message);
+        await sendMessage(chatId, formatProductFull(change));
         await new Promise(resolve => setTimeout(resolve, 100));
       }
     } else {
@@ -651,7 +652,7 @@ async function handleCallback(query) {
           '/add - добавить категории для отслеживания\n' +
           '/list - показать выбранные категории\n' +
           '/goods - показать список товаров\n' +
-          '/changes - изменения цен сегодня vs вчера\n' +
+          '/changes - изменения цен (как на сайте)\n' +
           '/help - список всех команд'
         );
         await answerCallback(query.id, '✅ Подтверждено');
@@ -809,12 +810,16 @@ export async function sendTelegramMessage(message) {
   }
 }
 
-export function formatPriceChangeNotification(product, oldPrice, newPrice, changeType = 'изменилась') {
+export function formatPriceChangeNotification(product, oldPrice, newPrice) {
   const change = newPrice - oldPrice;
   const percent = ((change / oldPrice) * 100).toFixed(1);
+  const isDecrease = change < 0;
+  const circleEmoji = isDecrease ? '🔴' : '🟢';
+  const sign = isDecrease ? '' : '+';
+  
   return formatProductFull({
-    product_name: product.name,
     product_code: product.code,
+    product_name: product.name,
     current_price: newPrice,
     previous_price: oldPrice,
     change: change,
