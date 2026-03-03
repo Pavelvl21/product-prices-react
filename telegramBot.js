@@ -348,9 +348,18 @@ async function showActiveCategories(chatId, user) {
 
 function formatPrice(price) {
   if (price === null || price === undefined) return '—';
-  // Используем toFixed(2) и replace, но сохраняем знак минуса если он есть
-  const formatted = price.toFixed(2).replace('.', ',');
-  return formatted; // вернется например "-281,67" или "+40,67"
+  
+  // Форматируем число с двумя знаками после запятой
+  const formatted = Math.abs(price).toFixed(2).replace('.', ',');
+  
+  // Добавляем знак вручную
+  if (price > 0) {
+    return `+${formatted}`;
+  } else if (price < 0) {
+    return `-${formatted}`;
+  } else {
+    return formatted;
+  }
 }
 
 function formatProductSimple(product) {
