@@ -18,6 +18,7 @@ async function sendMessage(chatId, text, options = {}) {
         chat_id: chatId,
         text: text,
         parse_mode: 'HTML',
+        disable_web_page_preview: true, // отключаем превью ссылок
         ...options
       })
     });
@@ -374,13 +375,13 @@ function formatProductFull(product, oldPrice = null, newPrice = null, change = n
       priceChangeHtml = `\n💰 <b>Цена:</b> ${formatPrice(newPrice)} руб.`;
     } else {
       const isDecrease = newPrice < oldPrice;
-      const arrow = isDecrease ? '▼' : '▲';
       const sign = isDecrease ? '' : '+';
       
-      changeEmoji = isDecrease ? '🔻' : '📈';
+      // 🔻 для снижения (красный), 🟢 для повышения (зеленый круг)
+      changeEmoji = isDecrease ? '🔻' : '🟢';
       
       priceChangeHtml = `\n💰 <b>Было:</b> ${formatPrice(oldPrice)} руб.` +
-        `\n💰 <b>Стало:</b> ${formatPrice(newPrice)} руб. ${arrow} ${sign}${change} (${sign}${percent}%)`;
+        `\n💰 <b>Стало:</b> ${formatPrice(newPrice)} руб. ${sign}${change} (${sign}${percent}%)`;
     }
   } else {
     priceChangeHtml = `\n💰 <b>Цена:</b> ${formatPrice(product.last_price)} руб.`;
@@ -389,7 +390,7 @@ function formatProductFull(product, oldPrice = null, newPrice = null, change = n
   return `
 ${changeEmoji} <b>${product.name}</b>
 📋 Код: <code>${product.code}</code>${priceChangeHtml}
-💳 Рассрочка: ${formatPrice(product.packPrice)} руб.
+💳 РЦ в рассрочку: ${formatPrice(product.packPrice)} руб.
 📆 Платеж: ${product.monthly_payment || '—'} руб./мес
 ⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
 🏷 Категория: ${product.category || '—'}
