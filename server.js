@@ -6,7 +6,7 @@ import jwt from 'jsonwebtoken';
 import cron from 'node-cron';
 import db, { initTables } from './database.js';
 import { updateAllPrices, cleanOldRecords, updatePricesForNewCode, sendWeeklyStats } from './priceUpdater.js';
-import { handleTelegramUpdate, setupBotEndpoints, sendMessageToAdmin } from './telegramBot.js';
+import { handleTelegramUpdate, setupBotEndpoints, sendTelegramMessage } from './telegramBot.js'; // ✅ ВАЖНО: sendTelegramMessage, не sendMessageToAdmin
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,7 +26,7 @@ await initTables();
 app.use(express.json());
 app.use(express.static('public'));
 
-// CORS для фронта и бота
+// CORS
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', 'https://price-hunter-bel.vercel.app');
   res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
@@ -58,9 +58,6 @@ function authenticateBot(req, res, next) {
 
 // ==================== ПУБЛИЧНЫЕ ЭНДПОИНТЫ ДЛЯ БОТА ====================
 
-/**
- * Получить список всех категорий (без авторизации)
- */
 app.get('/api/public/categories', async (req, res) => {
   try {
     const result = await db.execute(`
@@ -76,14 +73,9 @@ app.get('/api/public/categories', async (req, res) => {
   }
 });
 
-/**
- * Регистрация нового пользователя из бота
- * Тело запроса: { telegramId, email, categories, username, firstName, lastName }
- */
 app.post('/api/public/register', async (req, res) => {
   const { telegramId, email, categories, username, firstName, lastName } = req.body;
   
-  // Валидация
   if (!telegramId) {
     return res.status(400).json({ error: 'telegramId обязателен' });
   }
@@ -97,7 +89,6 @@ app.post('/api/public/register', async (req, res) => {
   }
 
   try {
-    // Проверяем, нет ли уже такого пользователя
     const existing = await db.execute({
       sql: 'SELECT telegram_id FROM telegram_users WHERE telegram_id = ?',
       args: [telegramId]
@@ -107,7 +98,6 @@ app.post('/api/public/register', async (req, res) => {
       return res.status(409).json({ error: 'Пользователь уже существует' });
     }
 
-    // Сохраняем пользователя
     await db.execute({
       sql: `INSERT INTO telegram_users 
             (telegram_id, username, first_name, last_name, email, status, selected_categories)
@@ -122,24 +112,6 @@ app.post('/api/public/register', async (req, res) => {
       ]
     });
 
-    // Отправляем уведомление админу через бота
-    const userInfo = {
-      telegram_id: telegramId,
-      username: username || '',
-      first_name: firstName || '',
-      last_name: lastName || '',
-      email,
-      selected_categories: JSON.stringify(categories)
-    };
-
-    // Вызываем функцию бота для уведомления (она уже есть)
-    try {
-      const { notifyAdminAboutNewUser } = await import('./telegramBot.js');
-      await notifyAdminAboutNewUser(userInfo);
-    } catch (notifyErr) {
-      console.error('❌ Ошибка при уведомлении админа:', notifyErr);
-    }
-
     res.json({ success: true, message: 'Пользователь зарегистрирован, ожидает подтверждения' });
 
   } catch (err) {
@@ -148,9 +120,6 @@ app.post('/api/public/register', async (req, res) => {
   }
 });
 
-/**
- * Получить статус пользователя (для бота)
- */
 app.get('/api/public/user/:telegramId', async (req, res) => {
   const { telegramId } = req.params;
 
