@@ -203,27 +203,25 @@ async function getProductsByCategory(category) {
 
 async function getRecentPriceChanges() {
   try {
-    // Упрощенный запрос - просто берем все изменения за последние 2 дня
-    const result = await db.execute({
-      sql: `
-        SELECT 
-          ph.product_code,
-          ph.product_name,
-          ph.price as current_price,
-          ph.updated_at,
-          pi.last_price as previous_price,
-          pi.packPrice,
-          pi.monthly_payment,
-          pi.no_overpayment_max_months,
-          pi.link,
-          pi.category,
-          pi.brand
-        FROM price_history ph
-        JOIN products_info pi ON ph.product_code = pi.code
-        WHERE ph.updated_at >= datetime('now', '-2 days')
-        ORDER BY ph.updated_at DESC
-      `
-    });
+    // Упрощенный запрос - исправленный синтаксис
+    const result = await db.execute(`
+      SELECT 
+        ph.product_code,
+        ph.product_name,
+        ph.price as current_price,
+        ph.updated_at,
+        pi.last_price as previous_price,
+        pi.packPrice,
+        pi.monthly_payment,
+        pi.no_overpayment_max_months,
+        pi.link,
+        pi.category,
+        pi.brand
+      FROM price_history ph
+      JOIN products_info pi ON ph.product_code = pi.code
+      WHERE ph.updated_at >= datetime('now', '-2 days')
+      ORDER BY ph.updated_at DESC
+    `);
     
     console.log(`Найдено записей за 2 дня: ${result.rows.length}`);
     
