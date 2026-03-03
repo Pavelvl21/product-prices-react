@@ -505,11 +505,19 @@ async function handleCallback(query) {
 // ==================== ПУБЛИЧНЫЕ ФУНКЦИИ ====================
 
 export async function handleTelegramUpdate(update) {
+  console.log('🔄 Получен update от Telegram:', JSON.stringify(update).substring(0, 200) + '...');
+  
   try {
-    if (update.message) await handleMessage(update.message);
-    if (update.callback_query) await handleCallback(update.callback_query);
+    if (update.message) {
+      console.log('💬 Это сообщение:', update.message.text);
+      await handleMessage(update.message);
+    }
+    if (update.callback_query) {
+      console.log('🔘 Это callback:', update.callback_query.data);
+      await handleCallback(update.callback_query);
+    }
   } catch (err) {
-    console.error('Update error:', err);
+    console.error('❌ Update error:', err);
   }
 }
 
