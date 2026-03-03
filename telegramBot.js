@@ -203,47 +203,65 @@ async function getProductsByCategory(category) {
 
 async function getRecentPriceChanges() {
   try {
+    // Просто берем последние 2 дня цен из products_info (как на фронте)
     const result = await db.execute(`
       SELECT 
-        ph.product_code,
-        ph.product_name,
-        ph.price as current_price,
-        ph.updated_at,
-        pi.last_price as previous_price,
-        pi.packPrice,
-        pi.monthly_payment,
-        pi.no_overpayment_max_months,
-        pi.link,
-        pi.category,
-        pi.brand
-      FROM price_history ph
-      JOIN products_info pi ON ph.product_code = pi.code
-      WHERE ph.updated_at >= datetime('now', '-2 days')
-      ORDER BY ph.updated_at DESC
+        code,
+        name,
+        last_price as current_price,
+        last_update as current_date,
+        packPrice,
+        monthly_payment,
+        no_overpayment_max_months,
+        link,
+        category,
+        brand
+      FROM products_info
+      WHERE last_update >= datetime('now', '-2 days')
+      ORDER BY last_update DESC
     `);
     
-    console.log(`Найдено записей за 2 дня: ${result.rows.length}`);
+    console.log(`Найдено товаров с обновлениями: ${result.rows.length}`);
     
-    // Группируем по товарам и берем последнюю запись
-    const changesByProduct = {};
+    // Для каждого товара нужно получить предыдущую цену
+    const changes = [];
     
-    result.rows.forEach(row => {
-      if (!changesByProduct[row.product_code]) {
-        changesByProduct[row.product_code] = row;
+    for (const row of result.rows) {
+      // Берем предыдущую запись из price_history
+      const prevResult = await db.execute({
+        sql: `
+          SELECT price FROM price_history 
+          WHERE product_code = ? AND updated_at < ?
+          ORDER BY updated_at DESC LIMIT 1
+        `,
+        args: [row.code, row.current_date]
+      });
+      
+      if (prevResult.rows.length > 0) {
+        const previous_price = prevResult.rows[0].price;
+        const change = row.current_price - previous_price;
+        
+        if (Math.abs(change) > 0.01) {
+          changes.push({
+            product_code: row.code,
+            product_name: row.name,
+            current_price: row.current_price,
+            updated_at: row.current_date,
+            previous_price: previous_price,
+            change: change,
+            percent: (change / previous_price * 100).toFixed(1),
+            packPrice: row.packPrice,
+            monthly_payment: row.monthly_payment,
+            no_overpayment_max_months: row.no_overpayment_max_months,
+            link: row.link,
+            category: row.category,
+            brand: row.brand
+          });
+        }
       }
-    });
+    }
     
-    const changes = Object.values(changesByProduct)
-      .filter(row => Math.abs(row.current_price - row.previous_price) > 0.01)
-      .map(row => ({
-        ...row,
-        change: row.current_price - row.previous_price,
-        percent: ((row.current_price - row.previous_price) / row.previous_price * 100).toFixed(1)
-      }))
-      .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
-    
-    console.log(`Изменений после фильтрации: ${changes.length}`);
-    return changes;
+    return changes.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
   } catch (err) {
     console.error('Ошибка получения изменений:', err);
     return [];
