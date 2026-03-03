@@ -377,11 +377,13 @@ function formatProductFull(product, oldPrice = null, newPrice = null, change = n
       const isDecrease = newPrice < oldPrice;
       const sign = isDecrease ? '' : '+';
       
-      // 🔻 для снижения (красный), 🟢 для повышения (зеленый круг)
-      changeEmoji = isDecrease ? '🔻' : '🟢';
+      // 🔴 для снижения, 🟢 для повышения
+      const circleEmoji = isDecrease ? '🔴' : '🟢';
+      changeEmoji = circleEmoji; // для заголовка
       
+      // Добавляем кружок и в строку со "Стало"
       priceChangeHtml = `\n💰 <b>Было:</b> ${formatPrice(oldPrice)} руб.` +
-        `\n💰 <b>Стало:</b> ${formatPrice(newPrice)} руб. ${sign}${change} (${sign}${percent}%)`;
+        `\n💰 <b>Стало:</b> ${formatPrice(newPrice)} руб. ${circleEmoji} ${sign}${change} (${sign}${percent}%)`;
     }
   } else {
     priceChangeHtml = `\n💰 <b>Цена:</b> ${formatPrice(product.last_price)} руб.`;
@@ -393,7 +395,6 @@ ${changeEmoji} <b>${product.name}</b>
 💳 РЦ в рассрочку: ${formatPrice(product.packPrice)} руб.
 📆 Платеж: ${product.monthly_payment || '—'} руб./мес
 ⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
-🏷 Категория: ${product.category || '—'}
 🔗 <a href="https://www.21vek.by${product.link}">Ссылка на товар</a>
 `;
 }
