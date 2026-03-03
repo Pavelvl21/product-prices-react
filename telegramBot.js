@@ -311,7 +311,13 @@ async function handleMessage(message) {
         `🆔 ID: <code>${userId}</code>${categoriesInfo}`
       );
     } else if (text === '/select') {
-      await showCategoriesWithMultiSelect(chatId);
+        console.log('🎯 Обработка команды /select для пользователя:', userId);
+        console.log('📁 Статус пользователя:', user?.status);
+        console.log('📁 Вызов showCategoriesWithMultiSelect с chatId:', chatId);
+  
+        await showCategoriesWithMultiSelect(chatId);
+  
+        console.log('✅ showCategoriesWithMultiSelect выполнен');
     } else if (text === '/goods') {
       const selectedCategories = user?.selected_categories || [];
       
