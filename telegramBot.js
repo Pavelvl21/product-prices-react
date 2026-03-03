@@ -336,16 +336,45 @@ async function handleMessage(message) {
 
     await sendMessage(chatId, '✅ Email принят. Теперь выбери категории товаров для отслеживания.');
     await showAddCategories(chatId, userId);
-    return;
+    return; // ⬅️ ВАЖНО! Завершаем обработку, чтобы не уйти в проверки ниже
   }
 
-  // Если пользователь не авторизован
+  // === Если пользователь не авторизован ===
   if (!user || user.status !== 'approved') {
     await sendMessage(chatId, '❌ Сначала используй /start');
     return;
   }
 
-  // TODO: сюда можно добавить /help, /list, /changes и т.д.
+  // === Обработка команд для авторизованных пользователей ===
+  if (text === '/help') {
+    await sendMessage(chatId,
+      '📋 <b>Доступные команды:</b>\n\n' +
+      '/start - приветствие\n' +
+      '/help - это сообщение\n' +
+      '/status - проверить статус\n' +
+      '/add - добавить категории для отслеживания\n' +
+      '/list - показать выбранные категории\n' +
+      '/goods - показать список товаров (только названия)\n' +
+      '/changes - показать изменения цен за сегодня'
+    );
+    return;
+  }
+
+  if (text === '/status') {
+    const categories = user.selected_categories || [];
+    const categoriesInfo = categories.length > 0 
+      ? `\n📁 Выбранные категории (${categories.length}):\n${categories.map(c => `• ${c}`).join('\n')}` 
+      : '\n📁 Категории не выбраны';
+    
+    await sendMessage(chatId,
+      `✅ <b>Статус:</b> подтверждён\n` +
+      `🆔 ID: <code>${userId}</code>${categoriesInfo}`
+    );
+    return;
+  }
+
+  // TODO: остальные команды (/add, /list, /goods, /changes)
+
   await sendMessage(chatId, '❓ Неизвестная команда. /help');
 }
 
@@ -411,7 +440,7 @@ async function handleCallback(query) {
 
     await updateUserCategories(userId, selected);
     await answerCallback(query.id, '✅ Обновлено');
-    await notifyAdminAboutRequest(userId); // обновить сообщение админа
+    await notifyAdminAboutRequest(userId);
     return;
   }
 
