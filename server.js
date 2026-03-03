@@ -6,7 +6,7 @@ import jwt from 'jsonwebtoken';
 import cron from 'node-cron';
 import db, { initTables } from './database.js';
 import { updateAllPrices, cleanOldRecords, updatePricesForNewCode, sendWeeklyStats } from './priceUpdater.js';
-import { handleTelegramUpdate, setupBotEndpoints, sendTelegramMessage } from './telegramBot.js'; // ✅ ВАЖНО: sendTelegramMessage, не sendMessageToAdmin
+import { handleTelegramUpdate, setupBotEndpoints, sendTelegramMessage, formatPriceChangeNotification } from './telegramBot.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,16 +26,13 @@ await initTables();
 app.use(express.json());
 app.use(express.static('public'));
 
-// CORS
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', 'https://price-hunter-bel.vercel.app');
   res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-secret-key, x-bot-key, cache-control, pragma, expires, if-none-match, if-modified-since');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-secret-key, cache-control, pragma, expires, if-none-match, if-modified-since');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
-
-// ==================== МИДЛВАРЫ ====================
 
 function authenticateToken(req, res, next) {
   const token = req.headers['authorization']?.split(' ')[1];
@@ -48,106 +45,6 @@ function authenticateToken(req, res, next) {
   });
 }
 
-function authenticateBot(req, res, next) {
-  const botKey = req.headers['x-bot-key'];
-  if (!botKey || botKey !== MY_SECRET_KEY) {
-    return res.status(403).json({ error: 'Доступ запрещен' });
-  }
-  next();
-}
-
-// ==================== ПУБЛИЧНЫЕ ЭНДПОИНТЫ ДЛЯ БОТА ====================
-
-app.get('/api/public/categories', async (req, res) => {
-  try {
-    const result = await db.execute(`
-      SELECT DISTINCT category 
-      FROM products_info 
-      WHERE category IS NOT NULL AND category != ''
-      ORDER BY category
-    `);
-    res.json(result.rows.map(row => row.category));
-  } catch (err) {
-    console.error('❌ Ошибка получения категорий:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
-app.post('/api/public/register', async (req, res) => {
-  const { telegramId, email, categories, username, firstName, lastName } = req.body;
-  
-  if (!telegramId) {
-    return res.status(400).json({ error: 'telegramId обязателен' });
-  }
-  
-  if (!email || !email.endsWith('@patio-minsk.by')) {
-    return res.status(400).json({ error: 'Некорректный email, требуется @patio-minsk.by' });
-  }
-
-  if (!Array.isArray(categories)) {
-    return res.status(400).json({ error: 'categories должен быть массивом' });
-  }
-
-  try {
-    const existing = await db.execute({
-      sql: 'SELECT telegram_id FROM telegram_users WHERE telegram_id = ?',
-      args: [telegramId]
-    });
-
-    if (existing.rows.length > 0) {
-      return res.status(409).json({ error: 'Пользователь уже существует' });
-    }
-
-    await db.execute({
-      sql: `INSERT INTO telegram_users 
-            (telegram_id, username, first_name, last_name, email, status, selected_categories)
-            VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
-      args: [
-        telegramId,
-        username || '',
-        firstName || '',
-        lastName || '',
-        email,
-        JSON.stringify(categories)
-      ]
-    });
-
-    res.json({ success: true, message: 'Пользователь зарегистрирован, ожидает подтверждения' });
-
-  } catch (err) {
-    console.error('❌ Ошибка регистрации:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
-app.get('/api/public/user/:telegramId', async (req, res) => {
-  const { telegramId } = req.params;
-
-  try {
-    const result = await db.execute({
-      sql: 'SELECT status, email, selected_categories FROM telegram_users WHERE telegram_id = ?',
-      args: [telegramId]
-    });
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Пользователь не найден' });
-    }
-
-    const user = result.rows[0];
-    res.json({
-      status: user.status,
-      email: user.email,
-      categories: JSON.parse(user.selected_categories || '[]')
-    });
-
-  } catch (err) {
-    console.error('❌ Ошибка получения пользователя:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
-// ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
-
 function validateProductCode(code) {
   return /^\d{1,12}$/.test(code);
 }
@@ -156,8 +53,6 @@ function validateEmail(email) {
   const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return re.test(email);
 }
-
-// ==================== ПУБЛИЧНЫЕ ЭНДПОИНТЫ ДЛЯ ФРОНТА ====================
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -223,24 +118,37 @@ app.post('/api/login', async (req, res) => {
   res.json({ token });
 });
 
-// ==================== ЭНДПОИНТЫ ДЛЯ АДМИНА ====================
+app.post('/api/allowed-emails', async (req, res) => {
+  const userKey = req.headers['x-secret-key'];
+  if (!userKey || userKey !== MY_SECRET_KEY) {
+    return res.status(403).json({ error: 'Доступ запрещен' });
+  }
 
-app.post('/api/allowed-emails', authenticateBot, async (req, res) => {
   const { email } = req.body;
-  
+
   if (!email || !validateEmail(email)) {
     return res.status(400).json({ error: 'Некорректный email' });
   }
 
-  await db.execute({
-    sql: 'INSERT INTO allowed_emails (email) VALUES (?) ON CONFLICT(email) DO NOTHING',
-    args: [email]
-  });
+  try {
+    await db.execute({
+      sql: 'INSERT INTO allowed_emails (email) VALUES (?) ON CONFLICT(email) DO NOTHING',
+      args: [email]
+    });
 
-  res.json({ message: 'Email добавлен' });
+    res.json({ message: 'Email добавлен в белый список' });
+  } catch (err) {
+    console.error('Ошибка при добавлении email:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
 });
 
-app.get('/api/allowed-emails', authenticateBot, async (req, res) => {
+app.get('/api/allowed-emails', async (req, res) => {
+  const userKey = req.headers['x-secret-key'];
+  if (!userKey || userKey !== MY_SECRET_KEY) {
+    return res.status(403).json({ error: 'Доступ запрещен' });
+  }
+
   try {
     const result = await db.execute('SELECT email, created_at FROM allowed_emails ORDER BY created_at DESC');
     res.json(result.rows);
@@ -250,8 +158,6 @@ app.get('/api/allowed-emails', authenticateBot, async (req, res) => {
   }
 });
 
-// ==================== ЗАЩИЩЕННЫЕ ЭНДПОИНТЫ ====================
-
 app.get('/api/codes', authenticateToken, async (req, res) => {
   const result = await db.execute('SELECT code FROM product_codes ORDER BY created_at DESC');
   res.json(result.rows.map(r => r.code));
@@ -259,7 +165,7 @@ app.get('/api/codes', authenticateToken, async (req, res) => {
 
 app.post('/api/codes', authenticateToken, async (req, res) => {
   const { code } = req.body;
-  
+
   if (!validateProductCode(code)) {
     return res.status(400).json({ error: 'Неверный формат кода' });
   }
@@ -326,7 +232,7 @@ app.post('/api/codes/bulk', authenticateToken, async (req, res) => {
 
 app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
   const { code } = req.params;
-  
+
   await db.execute({ sql: 'DELETE FROM price_history WHERE product_code = ?', args: [code] });
   await db.execute({ sql: 'DELETE FROM products_info WHERE code = ?', args: [code] });
   
@@ -446,8 +352,6 @@ app.get('/api/stats', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== ТЕЛЕГРАМ БОТ ====================
-
 setupBotEndpoints(app, authenticateToken);
 
 app.post('/api/telegram/webhook', async (req, res) => {
@@ -459,8 +363,6 @@ app.post('/api/telegram/webhook', async (req, res) => {
     res.sendStatus(500);
   }
 });
-
-// ==================== ПЛАНИРОВЩИКИ ====================
 
 const schedule = [
   '30 0 * * *', '30 1 * * *', '30 6 * * *', '30 8 * * *',
