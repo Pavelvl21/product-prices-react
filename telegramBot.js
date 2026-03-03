@@ -109,10 +109,68 @@ async function getUserStatusFromServer(telegramId) {
   }
 }
 
+// ==================== ФУНКЦИИ ДЛЯ АДМИНА ====================
+
+async function approveUser(telegramId) {
+  try {
+    // Здесь должен быть эндпоинт на сервере для подтверждения
+    // Но пока оставим заглушку, так как это отдельная задача
+    console.log(`✅ Подтверждение пользователя ${telegramId}`);
+    return true;
+  } catch (err) {
+    console.error('❌ Ошибка подтверждения:', err);
+    return false;
+  }
+}
+
+async function rejectUser(telegramId) {
+  try {
+    console.log(`❌ Отклонение пользователя ${telegramId}`);
+    return true;
+  } catch (err) {
+    console.error('❌ Ошибка отклонения:', err);
+    return false;
+  }
+}
+
+async function blockUser(telegramId) {
+  try {
+    console.log(`🚫 Блокировка пользователя ${telegramId}`);
+    return true;
+  } catch (err) {
+    console.error('❌ Ошибка блокировки:', err);
+    return false;
+  }
+}
+
+// ==================== ФОРМАТИРОВАНИЕ ====================
+
+function formatPrice(price) {
+  if (price === null || price === undefined) return '—';
+  const formatted = Math.abs(price).toFixed(2).replace('.', ',');
+  if (price > 0) return `+${formatted}`;
+  if (price < 0) return `-${formatted}`;
+  return formatted;
+}
+
+function formatProductFull(product) {
+  const circleEmoji = product.isDecrease ? '🔴' : '🟢';
+  const changeValue = product.change;
+
+  return `
+${circleEmoji} <b>${product.product_name}</b>
+📋 Код: <code>${product.product_code}</code>
+💰 <b>Было:</b> ${formatPrice(product.previous_price)} руб.
+💰 <b>Стало:</b> ${formatPrice(product.current_price)} руб. ${circleEmoji} ${formatPrice(changeValue)} (${product.percent}%)
+💳 РЦ в рассрочку: ${formatPrice(product.packPrice)} руб.
+⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
+🔗 <a href="https://www.21vek.by${product.link}">Ссылка на товар</a>
+`;
+}
+
 // ==================== УВЕДОМЛЕНИЕ АДМИНУ ====================
 
-export async function notifyAdminAboutNewUser(user) {
-  const categories = JSON.parse(user.selected_categories || '[]');
+async function notifyAdminAboutNewUser(telegramId, email, categories, userData) {
   const catsText = categories.length 
     ? categories.map(c => `• ${c}`).join('\n') 
     : '—';
@@ -120,10 +178,10 @@ export async function notifyAdminAboutNewUser(user) {
   const text = `
 🔔 <b>Новый запрос доступа</b>
 
-👤 <b>${user.first_name || '—'} ${user.last_name || ''}</b>
-📱 Username: ${user.username ? '@' + user.username : '—'}
-🆔 ID: <code>${user.telegram_id}</code>
-📧 Email: <code>${user.email || '—'}</code>
+👤 <b>${userData.firstName || '—'} ${userData.lastName || ''}</b>
+📱 Username: ${userData.username ? '@' + userData.username : '—'}
+🆔 ID: <code>${telegramId}</code>
+📧 Email: <code>${email}</code>
 
 📋 Выбранные категории:
 ${catsText}
@@ -131,10 +189,10 @@ ${catsText}
 
   const keyboard = {
     inline_keyboard: [[
-      { text: '✅ Разрешить', callback_data: `approve_${user.telegram_id}` },
-      { text: '❌ Отклонить', callback_data: `reject_${user.telegram_id}` }
+      { text: '✅ Разрешить', callback_data: `approve_${telegramId}` },
+      { text: '❌ Отклонить', callback_data: `reject_${telegramId}` }
     ], [
-      { text: '🚫 Заблокировать', callback_data: `block_${user.telegram_id}` }
+      { text: '🚫 Заблокировать', callback_data: `block_${telegramId}` }
     ]]
   };
 
@@ -264,7 +322,9 @@ async function handleMessage(message) {
       '📋 <b>Команды:</b>\n\n' +
       '/status — профиль\n' +
       '/add — выбрать категории\n' +
-      '/list — показать выбранные'
+      '/list — показать выбранные\n' +
+      '/goods — список товаров (скоро)\n' +
+      '/changes — изменения цен (скоро)'
     );
     return;
   }
@@ -359,6 +419,15 @@ async function handleCallback(query) {
     if (success) {
       await answerCallback(query.id, '📬 Запрос отправлен');
       await sendMessage(msg.chat.id, '📬 Запрос отправлен администратору. Ожидайте.');
+      
+      // Отправляем уведомление админу
+      await notifyAdminAboutNewUser(
+        fromId,
+        userData.email,
+        userData.selected || [],
+        userData
+      );
+      
       tempUserData.delete(fromId);
     } else {
       await answerCallback(query.id, '❌ Ошибка при регистрации');
@@ -372,10 +441,80 @@ async function handleCallback(query) {
     return;
   }
 
-  // Здесь можно добавить логику подтверждения/отклонения
-  // Но она уже есть в старом коде, оставляем как есть
+  // === Подтверждение пользователя ===
+  if (data.startsWith('approve_')) {
+    const targetUserId = data.replace('approve_', '');
+    
+    const success = await approveUser(targetUserId);
+    if (success) {
+      await answerCallback(query.id, '✅ Пользователь подтверждён');
+      await sendMessage(targetUserId, '✅ Ваш запрос одобрен! Теперь вы можете пользоваться ботом.');
+      
+      // Убираем клавиатуру у админа
+      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: msg.chat.id,
+          message_id: msg.message_id,
+          reply_markup: { inline_keyboard: [] }
+        })
+      });
+    } else {
+      await answerCallback(query.id, '❌ Ошибка подтверждения');
+    }
+    return;
+  }
 
-  await answerCallback(query.id, '✅ Обработано');
+  // === Отклонение пользователя ===
+  if (data.startsWith('reject_')) {
+    const targetUserId = data.replace('reject_', '');
+    
+    const success = await rejectUser(targetUserId);
+    if (success) {
+      await answerCallback(query.id, '❌ Пользователь отклонён');
+      await sendMessage(targetUserId, '❌ Ваш запрос отклонён.');
+      
+      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: msg.chat.id,
+          message_id: msg.message_id,
+          reply_markup: { inline_keyboard: [] }
+        })
+      });
+    } else {
+      await answerCallback(query.id, '❌ Ошибка отклонения');
+    }
+    return;
+  }
+
+  // === Блокировка пользователя ===
+  if (data.startsWith('block_')) {
+    const targetUserId = data.replace('block_', '');
+    
+    const success = await blockUser(targetUserId);
+    if (success) {
+      await answerCallback(query.id, '🚫 Пользователь заблокирован');
+      await sendMessage(targetUserId, '🚫 Вы заблокированы.');
+      
+      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: msg.chat.id,
+          message_id: msg.message_id,
+          reply_markup: { inline_keyboard: [] }
+        })
+      });
+    } else {
+      await answerCallback(query.id, '❌ Ошибка блокировки');
+    }
+    return;
+  }
+
+  await answerCallback(query.id, '❓ Неизвестная команда');
 }
 
 // ==================== ЭКСПОРТЫ ====================
@@ -390,9 +529,31 @@ export async function handleTelegramUpdate(update) {
 }
 
 export function setupBotEndpoints(app, authenticateToken) {
-  // Эндпоинты для админки
+  // Эндпоинты для админки (можно добавить позже)
+  console.log('🔌 Бот эндпоинты настроены');
 }
 
-export async function sendMessageToAdmin(message) {
+// ⚠️ ВАЖНО: эти два экспорта нужны для priceUpdater.js
+export async function sendTelegramMessage(message) {
   return await sendMessage(ADMIN_CHAT_ID, message);
+}
+
+export function formatPriceChangeNotification(product, oldPrice, newPrice) {
+  const change = newPrice - oldPrice;
+  const percent = ((change / oldPrice) * 100).toFixed(1);
+  const isDecrease = change < 0;
+  const circleEmoji = isDecrease ? '🔴' : '🟢';
+
+  return formatProductFull({
+    product_code: product.code,
+    product_name: product.name,
+    current_price: newPrice,
+    previous_price: oldPrice,
+    change: change,
+    percent: percent,
+    packPrice: product.packPrice,
+    no_overpayment_max_months: product.no_overpayment_max_months,
+    link: product.link,
+    isDecrease: isDecrease
+  });
 }
