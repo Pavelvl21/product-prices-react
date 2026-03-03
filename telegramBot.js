@@ -338,39 +338,61 @@ async function handleMessage(message) {
     return;
   }
 
-  if (text === '/changes') {
-    const data = await getProductsFromServer();
-    const changes = data?.products
-      .filter(p => p.priceToday && p.priceYesterday && Math.abs(p.priceToday - p.priceYesterday) > 0.01)
-      .map(p => ({
-        ...p,
-        change: p.priceToday - p.priceYesterday,
-        percent: ((p.priceToday - p.priceYesterday) / p.priceYesterday * 100).toFixed(1),
-        isDecrease: p.priceToday < p.priceYesterday
-      })) || [];
-
-    if (changes.length === 0) {
-      await sendMessage(chatId, '📭 За сегодня изменений нет');
-      return;
-    }
-
-    await sendMessage(chatId, `📊 Изменений: ${changes.length}`);
-    for (const ch of changes.slice(0, 5)) {
-      await sendMessage(chatId, formatProductFull({
-        product_code: ch.code,
-        product_name: ch.name,
-        current_price: ch.priceToday,
-        previous_price: ch.priceYesterday,
-        change: ch.change,
-        percent: ch.percent,
-        packPrice: ch.packPrice,
-        no_overpayment_max_months: ch.no_overpayment_max_months,
-        link: ch.link,
-        isDecrease: ch.isDecrease
-      }));
-    }
+if (text === '/changes') {
+  const selected = user.selected_categories || [];
+  if (selected.length === 0) {
+    await sendMessage(chatId, '❌ Сначала выберите категории через /add');
     return;
   }
+
+  const data = await getProductsFromServer();
+  const changes = data?.products
+    .filter(p => 
+      selected.includes(p.category) && 
+      p.priceToday && 
+      p.priceYesterday && 
+      Math.abs(p.priceToday - p.priceYesterday) > 0.01
+    )
+    .map(p => ({
+      code: p.code,
+      name: p.name,
+      priceToday: p.priceToday,
+      priceYesterday: p.priceYesterday,
+      change: p.priceToday - p.priceYesterday,
+      percent: ((p.priceToday - p.priceYesterday) / p.priceYesterday * 100).toFixed(1),
+      packPrice: p.packPrice,
+      no_overpayment_max_months: p.no_overpayment_max_months,
+      link: p.link,
+      isDecrease: p.priceToday < p.priceYesterday
+    })) || [];
+
+  if (changes.length === 0) {
+    await sendMessage(chatId, '📭 В выбранных категориях сегодня нет изменений');
+    return;
+  }
+
+  await sendMessage(chatId, `📊 Изменений в ваших категориях: ${changes.length}`);
+  
+  for (const ch of changes.slice(0, 5)) {
+    await sendMessage(chatId, formatProductFull({
+      product_code: ch.code,
+      product_name: ch.name,
+      current_price: ch.priceToday,
+      previous_price: ch.priceYesterday,
+      change: ch.change,
+      percent: ch.percent,
+      packPrice: ch.packPrice,
+      no_overpayment_max_months: ch.no_overpayment_max_months,
+      link: ch.link,
+      isDecrease: ch.isDecrease
+    }));
+    
+    if (changes.length > 5 && ch === changes[4]) {
+      await sendMessage(chatId, `... и ещё ${changes.length - 5} изменений.`);
+    }
+  }
+  return;
+}
 
   await sendMessage(chatId, '❓ Неизвестная команда. /help');
 }
