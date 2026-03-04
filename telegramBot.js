@@ -221,12 +221,17 @@ function formatPrice(price) {
 
 function formatProductFull(product) {
   const circleEmoji = product.isDecrease ? '🔴' : '🟢';
+  
+  // Цена рассрочки без знака
+  const installmentPrice = product.packPrice ? product.packPrice.toFixed(2).replace('.', ',') : '—';
+  
   return `
 ${circleEmoji} <b>${product.product_name}</b>
 📋 Код: <code>${product.product_code}</code>
 💰 <b>Было:</b> ${formatPrice(product.previous_price)} руб.
 💰 <b>Стало:</b> ${formatPrice(product.current_price)} руб. ${circleEmoji} ${formatPrice(product.change)} (${product.percent}%)
-💳 РЦ в рассрочку: ${formatPrice(product.packPrice)} руб.
+💳 РЦ в рассрочку: ${installmentPrice} руб.
+⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
 🔗 <a href="https://www.21vek.by${product.link}">Ссылка</a>
 `;
 }
