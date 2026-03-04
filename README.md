@@ -1,4 +1,3 @@
-# Telegram Bot
 ## 📁 Структура проекта
 ```
 telegram/
