@@ -349,12 +349,6 @@ async function handleMessage(message) {
   if (user) {
     console.log(`🔍 Статус: ${user.status}, категорий: ${user.selected_categories?.length || 0}`);
   }
-
-
-  
-
-  const user = await getUser(userId);
-
   // === КОМАНДЫ АДМИНА (доступны всегда) ===
   if (userId == ADMIN_CHAT_ID) {
     
