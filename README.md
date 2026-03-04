@@ -1,9 +1,5 @@
 # Telegram Bot
-
-Модульный Telegram бот на Node.js.
-
 ## 📁 Структура проекта
-
 ```
 telegram/
 ├── index.js                    # основной файл, собирает всё вместе
