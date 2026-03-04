@@ -453,25 +453,37 @@ async function handleCallback(query) {
     return;
   }
 
-  if (data.startsWith('approve_')) {
-    const userId = data.replace('approve_', '');
-    const user = await getUser(userId);
+if (data.startsWith('approve_')) {
+  const userId = data.replace('approve_', '');
+  const user = await getUser(userId);
+  
+  if (user) {
+    await updateUserStatus(userId, 'approved', 'admin');
     
-    if (user) {
-      await updateUserStatus(userId, 'approved', 'admin');
-      await answerCallback(query.id, '✅ Подтверждён');
-      await sendMessage(user.chat_id, '✅ Ваш запрос одобрен! /start');
-      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
-        method: 'POST',
-        body: JSON.stringify({
-          chat_id: msg.chat.id,
-          message_id: msg.message_id,
-          reply_markup: { inline_keyboard: [] }
-        })
-      });
-    }
-    return;
+    // Убираем клавиатуру у админа
+    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: msg.chat.id,
+        message_id: msg.message_id,
+        reply_markup: { inline_keyboard: [] }
+      })
+    });
+
+    // Отправляем пользователю предложение выбрать категории
+    await sendMessage(user.chat_id, 
+      '✅ <b>Ваш запрос одобрен!</b>\n\n' +
+      'Теперь выберите категории товаров для отслеживания:'
+    );
+    
+    // Показываем выбор категорий
+    await showCategorySelection(user.chat_id, userId, []);
+    
+    await answerCallback(query.id, '✅ Подтверждено');
   }
+  return;
+}
 
   if (data.startsWith('reject_')) {
     const userId = data.replace('reject_', '');
