@@ -18,6 +18,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET;
 const MY_SECRET_KEY = process.env.SECRET_KEY;
+const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 if (!JWT_SECRET) {
   console.error('❌ JWT_SECRET не задан');
@@ -136,6 +137,69 @@ function sanitizeInput(str) {
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// ==================== ПУБЛИЧНЫЙ ЭНДПОИНТ ДЛЯ КАТЕГОРИЙ ====================
+
+app.get('/api/public/categories', async (req, res) => {
+  try {
+    const result = await db.execute(`
+      SELECT DISTINCT category 
+      FROM products_info 
+      WHERE category IS NOT NULL AND category != ''
+      ORDER BY category
+    `);
+    
+    res.json({ categories: result.rows.map(row => row.category) });
+    
+  } catch (err) {
+    console.error('Ошибка получения категорий:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// ==================== ПУБЛИЧНЫЙ ЭНДПОИНТ ДЛЯ ОБНОВЛЕНИЯ КАТЕГОРИЙ ПОЛЬЗОВАТЕЛЯ ====================
+
+app.post('/api/public/user/categories', async (req, res) => {
+  const { telegramId, categories } = req.body;
+  
+  if (!telegramId || !Array.isArray(categories)) {
+    return res.status(400).json({ error: 'Некорректные данные' });
+  }
+
+  try {
+    await db.execute({
+      sql: 'UPDATE telegram_users SET selected_categories = ? WHERE telegram_id = ?',
+      args: [JSON.stringify(categories), telegramId]
+    });
+    
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Ошибка обновления категорий:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// ==================== ПУБЛИЧНЫЙ ЭНДПОИНТ ДЛЯ ПОДТВЕРЖДЕНИЯ РЕГИСТРАЦИИ ====================
+
+app.post('/api/public/user/approve', async (req, res) => {
+  const { telegramId } = req.body;
+  
+  if (!telegramId) {
+    return res.status(400).json({ error: 'telegramId обязателен' });
+  }
+
+  try {
+    await db.execute({
+      sql: 'UPDATE telegram_users SET status = ? WHERE telegram_id = ?',
+      args: ['approved', telegramId]
+    });
+    
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Ошибка подтверждения:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
 });
 
 app.post('/api/register', authLimiter, async (req, res) => {
