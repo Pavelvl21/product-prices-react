@@ -397,85 +397,83 @@ async function handleCallback(query) {
   console.log('📞 Callback:', data);
 
   // === ВЫБОР КАТЕГОРИИ — редактируем текущее сообщение ===
-  if (data.startsWith('sel_cat_')) {
-    const parts = data.split('_');
-    const userId = parseInt(parts[2]);
-    const catIndex = parseInt(parts[3]);
-    
-    if (userId !== fromId) {
-      await answerCallback(query.id, '⛔ Это не ваша сессия');
-      return;
-    }
-
-    const currentUser = await getUser(fromId);
-    if (!currentUser || currentUser.selection_locked) {
-      await answerCallback(query.id, '❌ Выбор уже завершён');
-      return;
-    }
-
-    const categories = await getCategoriesFromServer();
-    const category = categories[catIndex];
-    if (!category) {
-      await answerCallback(query.id, '❌ Категория не найдена');
-      return;
-    }
-
-    const selected = currentUser.selected_categories || [];
-    const updated = selected.includes(category)
-      ? selected.filter(c => c !== category)
-      : [...selected, category];
-
-    // Сохраняем в БД
-    await updateUserCategories(fromId, updated);
-
-    // Формируем обновлённую клавиатуру
-    const keyboard = [];
-    let row = [];
-
-    categories.forEach((cat, idx) => {
-      const isSelected = updated.includes(cat);
-      row.push({
-        text: (isSelected ? '✅ ' : '⬜ ') + cat,
-        callback_data: `sel_cat_${userId}_${idx}`
-      });
-      if (row.length === 2) {
-        keyboard.push([...row]);
-        row = [];
-      }
-    });
-    
-    if (row.length) keyboard.push(row);
-
-    keyboard.push([{
-      text: '✅ Завершить выбор',
-      callback_data: 'confirm_selection'
-    }]);
-
-    const selectedText = updated.length 
-      ? `\n\n✅ Выбрано:\n${updated.map(c => `• ${c}`).join('\n')}` 
-      : '';
-
-    // Сначала отвечаем на callback
-    await answerCallback(query.id, `✅ ${category} ${selected.includes(category) ? 'убрана' : 'добавлена'}`);
-
-    // Даём Telegram время обработать ответ (100мс достаточно)
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    // Теперь обновляем сообщение
-    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: msg.chat.id,
-        message_id: msg.message_id,
-        text: `📁 Выберите категории для отслеживания:${selectedText}`,
-        parse_mode: 'HTML',
-        reply_markup: { inline_keyboard: keyboard }
-      })
-    });
-
+if (data.startsWith('sel_cat_')) {
+  const parts = data.split('_');
+  const userId = parseInt(parts[2]);
+  const catIndex = parseInt(parts[3]);
+  
+  if (userId !== fromId) {
+    await answerCallback(query.id, '⛔ Это не ваша сессия');
     return;
   }
+
+  const currentUser = await getUser(fromId);
+  if (!currentUser || currentUser.selection_locked) {
+    await answerCallback(query.id, '❌ Выбор уже завершён');
+    return;
+  }
+
+  const categories = await getCategoriesFromServer();
+  const category = categories[catIndex];
+  if (!category) {
+    await answerCallback(query.id, '❌ Категория не найдена');
+    return;
+  }
+
+  const selected = currentUser.selected_categories || [];
+  const updated = selected.includes(category)
+    ? selected.filter(c => c !== category)
+    : [...selected, category];
+
+  await updateUserCategories(fromId, updated);
+
+  // Формируем клавиатуру
+  const keyboard = [];
+  let row = [];
+  categories.forEach((cat, idx) => {
+    const isSelected = updated.includes(cat);
+    row.push({
+      text: (isSelected ? '✅ ' : '⬜ ') + cat,
+      callback_data: `sel_cat_${userId}_${idx}`
+    });
+    if (row.length === 2) {
+      keyboard.push([...row]);
+      row = [];
+    }
+  });
+  if (row.length) keyboard.push(row);
+  keyboard.push([{
+    text: '✅ Завершить выбор',
+    callback_data: 'confirm_selection'
+  }]);
+
+  const selectedText = updated.length 
+    ? `\n\n✅ Выбрано:\n${updated.map(c => `• ${c}`).join('\n')}` 
+    : '';
+
+  // Сначала отвечаем с текстом
+  await answerCallback(query.id, `✅ ${category} ${selected.includes(category) ? 'убрана' : 'добавлена'}`);
+  
+  // Даём время
+  await new Promise(resolve => setTimeout(resolve, 100));
+
+  // Обновляем сообщение
+  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: msg.chat.id,
+      message_id: msg.message_id,
+      text: `📁 Выберите категории для отслеживания:${selectedText}`,
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: keyboard }
+    })
+  });
+
+  // Принудительно снимаем выделение
+  await answerCallback(query.id, '');
+  return;
+}
 
   // === ЗАВЕРШЕНИЕ ВЫБОРА ===
   if (data === 'confirm_selection') {
