@@ -1,5 +1,14 @@
 import fetch from 'node-fetch';
 import db from './database.js';
+import {
+  broadcastToAll,
+  broadcastToCategories,
+  getSubscriberStats,
+  formatBroadcastResults,
+  formatSubscriberStats,
+  sendTestMessage,
+  notifyPriceChange
+} from './telegramBroadcast.js';
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -219,10 +228,9 @@ function formatPrice(price) {
   return formatted;
 }
 
-function formatProductFull(product) {
+export function formatProductFull(product) {
   const circleEmoji = product.isDecrease ? '🔴' : '🟢';
   
-  // Цена рассрочки без знака
   const installmentPrice = product.packPrice ? product.packPrice.toFixed(2).replace('.', ',') : '—';
   
   return `
@@ -236,7 +244,27 @@ ${circleEmoji} <b>${product.product_name}</b>
 `;
 }
 
-// ==================== НОВАЯ ФУНКЦИЯ ПОКАЗА КАТЕГОРИЙ ====================
+export function formatPriceChangeNotification(product, oldPrice, newPrice) {
+  const change = newPrice - oldPrice;
+  const percent = ((change / oldPrice) * 100).toFixed(1);
+  const isDecrease = change < 0;
+  return formatProductFull({
+    product_code: product.code,
+    product_name: product.name,
+    current_price: newPrice,
+    previous_price: oldPrice,
+    change: change,
+    percent: percent,
+    packPrice: product.packPrice,
+    monthly_payment: product.monthly_payment,
+    no_overpayment_max_months: product.no_overpayment_max_months,
+    link: product.link,
+    category: product.category,
+    isDecrease: isDecrease
+  });
+}
+
+// ==================== ПОКАЗ КАТЕГОРИЙ ====================
 
 async function showCategoryList(chatId, userId) {
   const categories = await getCategoriesFromServer();
@@ -245,14 +273,12 @@ async function showCategoryList(chatId, userId) {
     return;
   }
 
-  // Показываем заголовок
   await sendMessage(chatId, 
     '📋 <b>Доступные категории</b>\n\n' +
     'Нажимайте на кнопки под каждой категорией, чтобы добавить её в свой список.\n' +
     'После выбора всех нужных категорий нажмите "✅ Завершить выбор".'
   );
 
-  // Отправляем каждую категорию отдельным сообщением с кнопкой
   for (const category of categories) {
     const keyboard = {
       inline_keyboard: [[
@@ -265,11 +291,9 @@ async function showCategoryList(chatId, userId) {
       { reply_markup: keyboard, parse_mode: 'HTML' }
     );
     
-    // Небольшая задержка, чтобы не спамить
     await new Promise(resolve => setTimeout(resolve, 200));
   }
 
-  // Кнопка завершения выбора
   const finishKeyboard = {
     inline_keyboard: [[
       { text: '✅ Завершить выбор', callback_data: `finish_selection_${userId}` }
@@ -319,6 +343,80 @@ async function handleMessage(message) {
 
   const user = await getUser(userId);
 
+  // === КОМАНДЫ АДМИНА (доступны всегда) ===
+  if (userId == ADMIN_CHAT_ID) {
+    
+    if (text === '/help_broadcast') {
+      await sendMessage(chatId,
+        '📢 <b>Команды для рассылки</b>\n\n' +
+        '<b>/broadcast текст</b> - отправить всем\n' +
+        '<b>/broadcast_cat кат1,кат2 текст</b> - по категориям\n' +
+        '<b>/test_broadcast текст</b> - тест (только админу)\n' +
+        '<b>/stats</b> - статистика подписчиков\n' +
+        '<b>/help_broadcast</b> - это сообщение\n\n' +
+        '📌 <i>Задержка 35мс между сообщениями</i>'
+      );
+      return;
+    }
+
+    if (text.startsWith('/broadcast ')) {
+      const messageText = text.replace('/broadcast ', '');
+      
+      await sendMessage(chatId, `📣 Запускаю рассылку всем...`);
+      
+      broadcastToAll(messageText, {}, (progress) => {
+        if (progress.percent % 10 === 0 && progress.current < progress.total) {
+          sendMessage(ADMIN_CHAT_ID, 
+            `📊 <b>Прогресс:</b> ${progress.percent}%\n` +
+            `✅ ${progress.success} | ❌ ${progress.failed}`
+          );
+        }
+      }).then(results => {
+        sendMessage(ADMIN_CHAT_ID, formatBroadcastResults(results, 'all'));
+      });
+      
+      return;
+    }
+
+    if (text.startsWith('/broadcast_cat ')) {
+      const match = text.match(/\/broadcast_cat\s+([^\s]+(?:\s*,\s*[^\s]+)*)\s+(.+)/);
+      
+      if (!match) {
+        await sendMessage(chatId, 
+          '❌ <b>Неверный формат</b>\n\n' +
+          'Используйте: /broadcast_cat категория1,категория2 Текст\n' +
+          'Пример: /broadcast_cat Электроника,Ноутбуки Скидка 20%!'
+        );
+        return;
+      }
+      
+      const categories = match[1].split(',').map(c => c.trim());
+      const messageText = match[2];
+      
+      await sendMessage(chatId, `📣 Рассылка по категориям: ${categories.join(', ')}`);
+      
+      broadcastToCategories(messageText, categories).then(results => {
+        sendMessage(ADMIN_CHAT_ID, formatBroadcastResults(results, 'categories'));
+      });
+      
+      return;
+    }
+
+    if (text.startsWith('/test_broadcast ')) {
+      const messageText = text.replace('/test_broadcast ', '');
+      const sent = await sendTestMessage(messageText);
+      await sendMessage(chatId, sent ? '✅ Тест отправлен' : '❌ Ошибка');
+      return;
+    }
+
+    if (text === '/stats') {
+      const stats = await getSubscriberStats();
+      await sendMessage(chatId, formatSubscriberStats(stats));
+      return;
+    }
+  }
+
+  // === ОБРАБОТКА /START ===
   if (text === '/start') {
     if (!user) {
       await saveUser(userId, username, firstName, lastName, chatId);
@@ -336,7 +434,8 @@ async function handleMessage(message) {
           '📋 <b>Команды:</b>\n' +
           '/goods - список товаров\n' +
           '/changes - изменения цен\n' +
-          '/status - статус'
+          '/status - статус\n' +
+          '/help - помощь'
         );
       }
     } else {
@@ -345,11 +444,13 @@ async function handleMessage(message) {
     return;
   }
 
+  // === ПРОВЕРКА СТАТУСА ===
   if (!user || user.status !== 'approved') {
     await sendMessage(chatId, '❌ Доступ запрещён');
     return;
   }
 
+  // === ОБЫЧНЫЕ КОМАНДЫ ===
   if (text === '/status') {
     if (!checkRateLimit(userId, '/status')) return;
     
@@ -386,49 +487,49 @@ async function handleMessage(message) {
     return;
   }
 
-if (text === '/changes') {
-  if (!checkRateLimit(userId, '/changes')) return;
-  
-  const categories = user.selected_categories || [];
-  if (!categories.length) {
-    await sendMessage(chatId, '❌ Категории не выбраны');
+  if (text === '/changes') {
+    if (!checkRateLimit(userId, '/changes')) return;
+    
+    const categories = user.selected_categories || [];
+    if (!categories.length) {
+      await sendMessage(chatId, '❌ Категории не выбраны');
+      return;
+    }
+
+    const allChanges = await getPriceChanges();
+    const changes = allChanges.filter(c => categories.includes(c.category));
+
+    if (!changes.length) {
+      await sendMessage(chatId, '📭 Сегодня нет изменений в выбранных категориях');
+      return;
+    }
+
+    await sendMessage(chatId, `📊 Найдено изменений: ${changes.length}`);
+
+    for (const ch of changes) {
+      await sendMessage(chatId, formatProductFull(ch));
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
     return;
   }
 
-  const allChanges = await getPriceChanges();
-  const changes = allChanges.filter(c => categories.includes(c.category));
-
-  if (!changes.length) {
-    await sendMessage(chatId, '📭 Сегодня нет изменений в выбранных категориях');
-    return;
-  }
-
-  await sendMessage(chatId, `📊 Найдено изменений: ${changes.length}`);
-
-  // Отправляем ВСЕ изменения
-  for (const ch of changes) {
-    await sendMessage(chatId, formatProductFull(ch));
-    await new Promise(resolve => setTimeout(resolve, 100)); // небольшая задержка
-  }
-  return;
-}
   if (text === '/help') {
-  const commands = [
-    '📋 <b>Доступные команды:</b>',
-    '',
-    '👤 <b>Для всех:</b>',
-    '/start - начало работы',
-    '/help - это сообщение',
-    '/status - статус и категории',
-    '/goods - список товаров',
-    '/changes - изменения цен за сегодня',
-    '',
-    'ℹ️ Категории выбираются один раз при регистрации.'
-  ];
-  
-  await sendMessage(chatId, commands.join('\n'));
-  return;
-}
+    const commands = [
+      '📋 <b>Доступные команды:</b>',
+      '',
+      '👤 <b>Для всех:</b>',
+      '/start - начало работы',
+      '/help - это сообщение',
+      '/status - статус и категории',
+      '/goods - список товаров',
+      '/changes - изменения цен за сегодня',
+      '',
+      'ℹ️ Категории выбираются один раз при регистрации.'
+    ];
+    
+    await sendMessage(chatId, commands.join('\n'));
+    return;
+  }
 
   await sendMessage(chatId, '❓ Неизвестная команда. /help');
 }
@@ -469,7 +570,6 @@ async function handleCallback(query) {
     const updated = [...selected, category];
     await updateUserCategories(fromId, updated);
 
-    // Меняем кнопку на "✅ Добавлено"
     await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -498,12 +598,7 @@ async function handleCallback(query) {
     }
 
     const currentUser = await getUser(fromId);
-    if (!currentUser) {
-      await answerCallback(query.id, '❌ Пользователь не найден');
-      return;
-    }
-
-    if (currentUser.selection_locked) {
+    if (!currentUser || currentUser.selection_locked) {
       await answerCallback(query.id, '❌ Выбор уже завершён');
       return;
     }
@@ -516,7 +611,6 @@ async function handleCallback(query) {
 
     await lockUserSelection(fromId);
     
-    // Убираем клавиатуру с кнопки завершения
     await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -668,19 +762,5 @@ export async function sendTelegramMessage(message) {
   return await sendMessage(ADMIN_CHAT_ID, message);
 }
 
-export function formatPriceChangeNotification(product, oldPrice, newPrice) {
-  const change = newPrice - oldPrice;
-  const percent = ((change / oldPrice) * 100).toFixed(1);
-  const isDecrease = change < 0;
-  return formatProductFull({
-    product_code: product.code,
-    product_name: product.name,
-    current_price: newPrice,
-    previous_price: oldPrice,
-    change: change,
-    percent: percent,
-    packPrice: product.packPrice,
-    link: product.link,
-    isDecrease: isDecrease
-  });
-}
+// Экспортируем для priceUpdater.js
+export { formatPriceChangeNotification, notifyPriceChange };
