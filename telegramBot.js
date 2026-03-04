@@ -412,8 +412,25 @@ if (text === '/changes') {
   }
   return;
 }
+  if (text === '/help') {
+  const commands = [
+    '📋 <b>Доступные команды:</b>',
+    '',
+    '👤 <b>Для всех:</b>',
+    '/start - начало работы',
+    '/help - это сообщение',
+    '/status - статус и категории',
+    '/goods - список товаров',
+    '/changes - изменения цен за сегодня',
+    '',
+    'ℹ️ Категории выбираются один раз при регистрации.'
+  ];
+  
+  await sendMessage(chatId, commands.join('\n'));
+  return;
+}
 
-  await sendMessage(chatId, '❓ Неизвестная команда. /status');
+  await sendMessage(chatId, '❓ Неизвестная команда. /help');
 }
 
 // ==================== ОБРАБОТЧИК CALLBACK ====================
