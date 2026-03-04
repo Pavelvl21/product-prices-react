@@ -49,11 +49,10 @@ async function saveProductData(product, timestamp) {
     };
 
     if (todayRecord.rows.length === 0) {
-      console.log(`📝 Первая запись за ${today} для ${code}`);
-      await insertPriceRecord(code, product.name, price, now);
-      
+      // Первая запись за сегодня - логируем только если были изменения
       if (lastPrice !== undefined && Math.abs(price - lastPrice) > 0.01) {
-        console.log(`🔄 Цена изменилась для ${code}: ${lastPrice} → ${price}`);
+        console.log(`📝 Первая запись за ${today} для ${code} (цена изменилась: ${lastPrice} → ${price})`);
+        await insertPriceRecord(code, product.name, price, now);
         
         const notification = formatPriceChangeNotification(
           productWithCategory, 
@@ -64,13 +63,16 @@ async function saveProductData(product, timestamp) {
         // Отправка админу
         await sendTelegramMessage(notification);
         
-        // 🔥 ОТПРАВКА ВСЕМ ПОДПИСАННЫМ НА КАТЕГОРИЮ
+        // Отправка всем подписанным на категорию
         await notifyPriceChange(
           productWithCategory,
           lastPrice,
           price,
           formatPriceChangeNotification
         );
+      } else {
+        // Первая запись, но цена не изменилась - просто сохраняем без лога
+        await insertPriceRecord(code, product.name, price, now);
       }
       
     } else {
@@ -87,7 +89,7 @@ async function saveProductData(product, timestamp) {
         // Отправка админу
         await sendTelegramMessage(notification);
         
-        // 🔥 ОТПРАВКА ВСЕМ ПОДПИСАННЫМ НА КАТЕГОРИЮ
+        // Отправка всем подписанным на категорию
         await notifyPriceChange(
           productWithCategory,
           lastPrice,
@@ -96,7 +98,7 @@ async function saveProductData(product, timestamp) {
         );
         
       } else {
-        // Ничего не логируем для каждого товара (тишина)
+        // 🔇 ПОЛНАЯ ТИШИНА - ничего не логируем для неизменившихся цен
       }
     }
 
