@@ -761,6 +761,3 @@ export function setupBotEndpoints(app, authenticateToken) {
 export async function sendTelegramMessage(message) {
   return await sendMessage(ADMIN_CHAT_ID, message);
 }
-
-// Экспортируем для priceUpdater.js
-export { formatPriceChangeNotification, notifyPriceChange };
