@@ -240,9 +240,8 @@ export async function updateAllPrices() {
     let totalNewRecords = 0;
     let totalErrors = 0;
 
-    // Для сбора статистики по категориям и списка изменённых товаров
+    // Для сбора изменений по категориям (как в /changes, но сгруппированные)
     const categoryStats = {};
-    const changedProducts = []; // массив объектов для formatProductFull
 
     const processBatch = async (batch, batchIndex) => {
       const batchNum = batchIndex + 1;
@@ -333,12 +332,6 @@ export async function updateAllPrices() {
               category = product.categories[product.categories.length - 1].name;
             }
             
-            // Инициализируем статистику по категории
-            if (!categoryStats[category]) {
-              categoryStats[category] = { total: 0, changed: 0 };
-            }
-            categoryStats[category].total++;
-            
             const today = new Date().toISOString().split('T')[0];
             
             const todayRecord = await db.execute({
@@ -362,30 +355,53 @@ export async function updateAllPrices() {
             
             if (isChanged) {
               batchChanged++;
-              categoryStats[category].changed++;
               
-              // Сохраняем товар для детального отчёта
-              changedProducts.push({
-                product_code: product.code,
-                product_name: product.name,
-                current_price: currentPrice,
-                previous_price: lastPrice,
-                change: currentPrice - lastPrice,
-                percent: ((currentPrice - lastPrice) / lastPrice * 100).toFixed(1),
-                packPrice: product.packPrice,
-                monthly_payment: product.monthly_payment,
-                no_overpayment_max_months: product.no_overpayment_max_months,
-                link: product.link,
-                category: category,
-                brand: product.producerName || 'Без бренда',
-                isDecrease: currentPrice < lastPrice
-              });
+              // Сохраняем детальную информацию об изменении для категории
+              if (!categoryStats[category]) {
+                categoryStats[category] = {
+                  total: 0,
+                  increases: 0,
+                  decreases: 0,
+                  totalIncreasePercent: 0,
+                  totalDecreasePercent: 0,
+                  maxIncrease: { percent: 0, name: '', code: '' },
+                  maxDecrease: { percent: 0, name: '', code: '' }
+                };
+              }
+              
+              categoryStats[category].total++;
+              
+              const changePercent = ((currentPrice - lastPrice) / lastPrice) * 100;
+              
+              if (currentPrice > lastPrice) {
+                categoryStats[category].increases++;
+                categoryStats[category].totalIncreasePercent += changePercent;
+                
+                if (changePercent > categoryStats[category].maxIncrease.percent) {
+                  categoryStats[category].maxIncrease = {
+                    percent: changePercent,
+                    name: product.name,
+                    code: product.code
+                  };
+                }
+              } else {
+                categoryStats[category].decreases++;
+                categoryStats[category].totalDecreasePercent += Math.abs(changePercent);
+                
+                if (Math.abs(changePercent) > categoryStats[category].maxDecrease.percent) {
+                  categoryStats[category].maxDecrease = {
+                    percent: Math.abs(changePercent),
+                    name: product.name,
+                    code: product.code
+                  };
+                }
+              }
               
               const changeSymbol = currentPrice > lastPrice ? '⬆️' : '⬇️';
               const changeValue = (currentPrice - lastPrice).toFixed(2);
-              const changePercent = ((currentPrice - lastPrice) / lastPrice * 100).toFixed(1);
+              const changePercentFormatted = changePercent.toFixed(1);
               
-              console.log(`   ${changeSymbol} [${batchProcessed}/${products.length}] ${product.code}: ${lastPrice} → ${currentPrice} (${changeValue} руб, ${changePercent}%)`);
+              console.log(`   ${changeSymbol} [${batchProcessed}/${products.length}] ${product.code}: ${lastPrice} → ${currentPrice} (${changeValue} руб, ${changePercentFormatted}%)`);
             }
             
             if (todayRecord.rows.length === 0) {
@@ -452,77 +468,70 @@ export async function updateAllPrices() {
     console.log(`📊 **ИТОГОВАЯ СТАТИСТИКА**`);
     console.log('-'.repeat(40));
     console.log(`✅ Всего обработано: ${totalProcessed} товаров`);
-    console.log(`🔄 Цены изменились: ${totalChanged} товаров`);
+    console.log(`🔄 Цены изменились в этом обновлении: ${totalChanged} товаров`);
     console.log(`📝 Новых записей: ${totalNewRecords}`);
     console.log(`❌ Ошибок: ${totalErrors}`);
     console.log(`⏱️  Время выполнения: ${totalTime} сек`);
-    
-    // ========== ОТПРАВКА СТАТИСТИКИ АДМИНУ ==========
-    
-    // 1. Сводка по категориям (как в консоли)
-    let summaryMessage = `📊 <b>ОБНОВЛЕНИЕ ЦЕН ЗАВЕРШЕНО</b>\n\n`;
-    summaryMessage += `📅 ${new Date().toLocaleDateString('ru-RU')} ${new Date().toLocaleTimeString('ru-RU')}\n`;
-    summaryMessage += `📦 Всего обработано: ${totalProcessed} товаров\n`;
-    summaryMessage += `🔄 Изменений: ${totalChanged}\n`;
-    summaryMessage += `📝 Новых записей: ${totalNewRecords}\n`;
-    summaryMessage += `❌ Ошибок: ${totalErrors}\n`;
-    summaryMessage += `⏱️ Время: ${totalTime} сек\n\n`;
 
-    if (Object.keys(categoryStats).length > 0) {
-      summaryMessage += `📊 <b>СТАТИСТИКА ПО КАТЕГОРИЯМ:</b>\n`;
+    // ========== ОТПРАВКА СТАТИСТИКИ АДМИНУ (ИТОГИ ЗА СЕГОДНЯ) ==========
+    try {
+      // Получаем данные с API (как в команде /changes)
+      const response = await fetch(`${process.env.API_URL || 'http://localhost:3000'}/api/bot/products`, {
+        headers: { 'x-bot-key': process.env.SECRET_KEY }
+      });
       
-      const sortedCategories = Object.entries(categoryStats)
-        .sort((a, b) => b[1].total - a[1].total);
-      
-      for (const [category, stats] of sortedCategories) {
-        const changePercent = stats.total > 0 ? ((stats.changed / stats.total) * 100).toFixed(1) : '0.0';
-        const barLength = Math.round((stats.changed / stats.total) * 20) || 0;
-        const bar = '🟩'.repeat(barLength) + '⬜'.repeat(20 - barLength);
-        
-        summaryMessage += `\n<b>${category}</b>\n`;
-        summaryMessage += `   📦 Всего: ${stats.total} товаров\n`;
-        summaryMessage += `   🔄 Изменений: ${stats.changed} (${changePercent}%)\n`;
-        summaryMessage += `   ${bar}\n`;
+      if (response.ok) {
+        const data = await response.json();
+        const today = data.today;
+        const changes = data.products.filter(p => 
+          p.priceToday && p.priceYesterday && 
+          Math.abs(p.priceToday - p.priceYesterday) > 0.01
+        );
+
+        let adminMessage = `📊 <b>ИТОГИ ЗА ${today}</b>\n\n`;
+        adminMessage += `⏱️ Обновление завершено в ${new Date().toLocaleTimeString('ru-RU')}\n`;
+        adminMessage += `📦 Всего изменений за день: ${changes.length}\n\n`;
+
+        if (changes.length > 0) {
+          // Группируем по категориям
+          const categoryStatsDaily = {};
+          changes.forEach(p => {
+            const cat = p.category || 'Без категории';
+            if (!categoryStatsDaily[cat]) {
+              categoryStatsDaily[cat] = { total: 0, increases: 0, decreases: 0 };
+            }
+            categoryStatsDaily[cat].total++;
+            if (p.priceToday > p.priceYesterday) {
+              categoryStatsDaily[cat].increases++;
+            } else {
+              categoryStatsDaily[cat].decreases++;
+            }
+          });
+
+          adminMessage += `📊 <b>По категориям:</b>\n`;
+          Object.entries(categoryStatsDaily)
+            .sort((a, b) => b[1].total - a[1].total)
+            .forEach(([cat, stats]) => {
+              adminMessage += `\n<b>${cat}</b>\n`;
+              adminMessage += `   🔄 Всего: ${stats.total}\n`;
+              adminMessage += `   ⬆️ Повышений: ${stats.increases}\n`;
+              adminMessage += `   ⬇️ Снижений: ${stats.decreases}\n`;
+            });
+        } else {
+          adminMessage += `📭 За сегодня изменений не обнаружено`;
+        }
+
+        await sendTelegramMessage(adminMessage);
+        console.log('✅ Ежедневная сводка отправлена админу');
+      } else {
+        console.error('❌ Не удалось получить данные для отчёта');
+        await sendTelegramMessage(`❌ Не удалось получить данные для формирования отчёта`);
       }
-    } else {
-      summaryMessage += `📭 Нет данных по категориям.`;
+    } catch (error) {
+      console.error('Ошибка при отправке отчёта админу:', error);
     }
-
-    await sendTelegramMessage(summaryMessage);
-
-    // 2. Детальный список изменённых товаров (как в /changes)
-    if (changedProducts.length > 0) {
-      await sendTelegramMessage(`📋 <b>Детальные изменения (${changedProducts.length}):</b>`);
-      
-      for (let i = 0; i < changedProducts.length; i++) {
-        const product = changedProducts[i];
-        // Используем formatProductFull, но нужно убедиться, что функция доступна
-        // Импортируем её или дублируем логику? У нас есть formatProductFull в telegramBot.js, но здесь нет импорта.
-        // Можно вызвать formatPriceChangeNotification, но она требует oldPrice, newPrice.
-        // Проще здесь сформировать сообщение вручную, как в formatProductFull.
-        const circleEmoji = product.isDecrease ? '🔴' : '🟢';
-        const installmentPrice = product.packPrice ? product.packPrice.toFixed(2).replace('.', ',') : '—';
-        
-        const message = `
-${circleEmoji} <b>${product.product_name}</b>
-📋 Код: <code>${product.product_code}</code>
-💰 <b>Было:</b> ${product.previous_price.toFixed(2).replace('.', ',')} руб.
-💰 <b>Стало:</b> ${product.current_price.toFixed(2).replace('.', ',')} руб. ${circleEmoji} ${(product.change > 0 ? '+' : '')}${product.change.toFixed(2).replace('.', ',')} (${product.percent}%)
-💳 РЦ в рассрочку: ${installmentPrice} руб.
-⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
-🔗 <a href="https://www.21vek.by${product.link}">Ссылка</a>
-`;
-        await sendTelegramMessage(message);
-        
-        // Задержка между сообщениями, чтобы не спамить
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-    } else {
-      await sendTelegramMessage(`📭 Изменений цен не обнаружено.`);
-    }
-    
     // =================================================
-    
+
     console.log('='.repeat(60));
     console.log(`🕐 Завершено: ${new Date().toLocaleString()}`);
     console.log('='.repeat(60));
