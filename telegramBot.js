@@ -277,11 +277,9 @@ async function getProductsFromServer() {
 }
 
 async function getPriceChanges() {
-  logCommand(0, 'getPriceChanges', 'start', 'запрос изменений цен');
   const data = await getProductsFromServer();
-  
   if (!data?.products) {
-    logCommand(0, 'getPriceChanges', 'error', 'нет данных от API');
+    console.log('❌ [getPriceChanges] Нет данных от API');
     return [];
   }
   
@@ -302,8 +300,16 @@ async function getPriceChanges() {
       brand: p.brand,
       isDecrease: p.priceToday < p.priceYesterday
     }));
+
+  console.log(`📊 [getPriceChanges] Найдено изменений: ${changes.length} (⬆️ ${changes.filter(c => !c.isDecrease).length} / ⬇️ ${changes.filter(c => c.isDecrease).length})`);
   
-  logCommand(0, 'getPriceChanges', 'success', `найдено изменений:${changes.length}`);
+  // Сортируем
+  changes.sort((a, b) => {
+    if (!a.isDecrease && !b.isDecrease) return b.change - a.change;
+    if (a.isDecrease && b.isDecrease) return a.change - b.change;
+    return a.isDecrease ? 1 : -1;
+  });
+
   return changes;
 }
 
