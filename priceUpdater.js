@@ -49,59 +49,56 @@ async function saveProductData(product, timestamp) {
       category
     };
 
-    if (todayRecord.rows.length === 0) {
-      // Первая запись за сегодня
-      if (lastPrice !== undefined && Math.abs(price - lastPrice) > 0.01) {
-        console.log(`📝 Первая запись за ${today} для ${code} (цена изменилась: ${lastPrice} → ${price})`);
-        await insertPriceRecord(code, product.name, price, now);
-        
-        const notification = formatPriceChangeNotification(
-          productWithCategory, 
-          lastPrice, 
-          price
-        );
-        
-        // Отправка админу
-        await sendTelegramMessage(notification);
-        
-        // Отправка всем подписанным на категорию
-        await notifyPriceChange(
-          productWithCategory,
-          lastPrice,
-          price,
-          formatPriceChangeNotification
-        );
-      } else {
-        // Первая запись, но цена не изменилась - просто сохраняем без уведомлений
-        await insertPriceRecord(code, product.name, price, now);
-      }
-      
-    } else {
-      if (Math.abs(price - lastPrice) > 0.01) {
-        console.log(`🔄 Цена изменилась для ${code}: ${lastPrice} → ${price}`);
-        await insertPriceRecord(code, product.name, price, now);
-        
-        const notification = formatPriceChangeNotification(
-          productWithCategory, 
-          lastPrice, 
-          price
-        );
-        
-        // Отправка админу
-        await sendTelegramMessage(notification);
-        
-        // Отправка всем подписанным на категорию
-        await notifyPriceChange(
-          productWithCategory,
-          lastPrice,
-          price,
-          formatPriceChangeNotification
-        );
-        
-      } else {
-        // Цена не изменилась - ничего не делаем и не логируем
-      }
-    }
+if (todayRecord.rows.length === 0) {
+  // Первая запись за сегодня
+  if (lastPrice !== undefined && Math.abs(price - lastPrice) > 0.01) {
+    console.log(`📝 Первая запись за ${today} для ${code} (цена изменилась: ${lastPrice} → ${price})`);
+    await insertPriceRecord(code, product.name, price, now);
+    
+    const notification = formatPriceChangeNotification(
+      { ...product, code }, 
+      lastPrice, 
+      price
+    );
+    
+    // ✅ ТОЛЬКО ОДИН РАЗ ОТПРАВЛЯЕМ АДМИНУ
+    await sendTelegramMessage(notification);
+    
+    // Отправка всем подписанным на категорию
+    await notifyPriceChange(
+      { ...product, code, category },
+      lastPrice,
+      price,
+      formatPriceChangeNotification
+    );
+  } else {
+    // Первая запись, но цена не изменилась - просто сохраняем
+    await insertPriceRecord(code, product.name, price, now);
+  }
+  
+} else {
+  if (Math.abs(price - lastPrice) > 0.01) {
+    console.log(`🔄 Цена изменилась для ${code}: ${lastPrice} → ${price}`);
+    await insertPriceRecord(code, product.name, price, now);
+    
+    const notification = formatPriceChangeNotification(
+      { ...product, code }, 
+      lastPrice, 
+      price
+    );
+    
+    // ✅ ТОЛЬКО ОДИН РАЗ ОТПРАВЛЯЕМ АДМИНУ
+    await sendTelegramMessage(notification);
+    
+    // Отправка всем подписанным на категорию
+    await notifyPriceChange(
+      { ...product, code, category },
+      lastPrice,
+      price,
+      formatPriceChangeNotification
+    );
+  }
+}
 
     await db.execute({
       sql: `
@@ -448,7 +445,7 @@ export async function updateAllPrices() {
     console.log(`❌ Ошибок: ${totalErrors}`);
     console.log(`⏱️  Время выполнения: ${totalTime} сек`);
 
-    // ========== ОТПРАВКА КОМБИНИРОВАННОГО ОТЧЁТА АДМИНУ ==========
+    /* ========== ОТПРАВКА КОМБИНИРОВАННОГО ОТЧЁТА АДМИНУ ==========
     try {
       // Получаем данные с API (как в команде /changes)
       const response = await fetch(`${process.env.API_URL || 'http://localhost:3000'}/api/bot/products`, {
@@ -532,7 +529,7 @@ export async function updateAllPrices() {
     } catch (error) {
       console.error('Ошибка при отправке отчёта админу:', error);
     }
-    // =================================================
+    // =================================================*/
 
     console.log('='.repeat(60));
     console.log(`🕐 Завершено: ${new Date().toLocaleString()}`);
