@@ -709,70 +709,70 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
 /**
  * Получить все товары на полке текущего пользователя
  */
+// ==================== ПОЛКА ПОЛЬЗОВАТЕЛЯ С ПОИСКОМ ====================
 app.get('/api/user/shelf', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+    const category = req.query.category;
+    const brand = req.query.brand;
+    const search = req.query.search;
     
-    const products = await db.execute({
-      sql: `
-        SELECT p.*, us.added_at as shelf_added_at
-        FROM products_info p
-        INNER JOIN user_shelf us ON p.code = us.product_code
-        WHERE us.user_id = ?
-        ORDER BY us.added_at DESC
-      `,
-      args: [userId]
-    });
+    let query = `
+      SELECT p.*, us.added_at as shelf_added_at
+      FROM products_info p
+      INNER JOIN user_shelf us ON p.code = us.product_code
+      WHERE us.user_id = ${userId}
+    `;
     
-    if (products.rows.length === 0) {
-      return res.json({ products: [] });
+    if (category) {
+      query += ` AND p.category = '${category}'`;
     }
     
-    const codes = products.rows.map(p => p.code);
-    const placeholders = codes.map(() => '?').join(',');
+    if (brand) {
+      query += ` AND p.brand = '${brand}'`;
+    }
     
-    const history = await db.execute({
-      sql: `
+    if (search) {
+      query += ` AND (p.name LIKE '%${search}%' OR p.code LIKE '%${search}%')`;
+    }
+    
+    query += ` ORDER BY us.added_at DESC`;
+    
+    const products = await db.execute(query);
+    
+    // Получаем историю цен для этих товаров
+    if (products.rows.length > 0) {
+      const codes = products.rows.map(p => `'${p.code}'`).join(',');
+      
+      const history = await db.execute(`
         SELECT product_code, price, updated_at
         FROM price_history
-        WHERE product_code IN (${placeholders})
+        WHERE product_code IN (${codes})
         ORDER BY product_code, updated_at ASC
-      `,
-      args: codes
-    });
+      `);
 
-    const historyByProduct = {};
-    history.rows.forEach(row => {
-      if (!historyByProduct[row.product_code]) {
-        historyByProduct[row.product_code] = [];
-      }
-      historyByProduct[row.product_code].push({
-        date: row.updated_at,
-        price: row.price
+      const historyByProduct = {};
+      history.rows.forEach(row => {
+        if (!historyByProduct[row.product_code]) {
+          historyByProduct[row.product_code] = [];
+        }
+        historyByProduct[row.product_code].push({
+          date: row.updated_at,
+          price: row.price
+        });
       });
-    });
 
-    const result = products.rows.map(p => ({
-      code: p.code,
-      name: p.name,
-      link: p.link,
-      category: p.category || 'Товары',
-      brand: p.brand || 'Без бренда',
-      base_price: p.base_price,
-      packPrice: p.packPrice,
-      monthly_payment: p.monthly_payment,
-      no_overpayment_max_months: p.no_overpayment_max_months,
-      priceHistory: historyByProduct[p.code] || [],
-      currentPrice: p.last_price,
-      lastUpdate: p.last_update,
-      shelfAddedAt: p.shelf_added_at
-    }));
-
-    res.json({ products: result });
+      products.rows = products.rows.map(p => ({
+        ...p,
+        priceHistory: historyByProduct[p.code] || []
+      }));
+    }
+    
+    res.json({ products: products.rows });
     
   } catch (err) {
-    console.error('Ошибка получения полки пользователя:', err);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    console.error('Ошибка полки:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
