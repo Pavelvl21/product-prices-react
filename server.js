@@ -139,6 +139,23 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// ==================== ПУБЛИЧНЫЙ ЭНДПОИНТ ДЛЯ БРЕНДОВ ====================
+app.get('/api/public/brands', async (req, res) => {
+  try {
+    const result = await db.execute(`
+      SELECT DISTINCT brand 
+      FROM products_info 
+      WHERE brand IS NOT NULL AND brand != ''
+      ORDER BY brand
+    `);
+    
+    res.json({ brands: result.rows.map(row => row.brand) });
+    
+  } catch (err) {
+    console.error('Ошибка получения брендов:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
 // ==================== ПУБЛИЧНЫЙ ЭНДПОИНТ ДЛЯ КАТЕГОРИЙ ====================
 
 app.get('/api/public/categories', async (req, res) => {
