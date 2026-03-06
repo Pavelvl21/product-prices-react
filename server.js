@@ -828,6 +828,97 @@ app.delete('/api/user/shelf/:code', authenticateToken, async (req, res) => {
   }
 });
 
+// Добавь в server.js
+
+// Получить товары с пагинацией
+app.get('/api/products/paginated', authenticateToken, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 40;
+    const offset = parseInt(req.query.offset) || 0;
+    
+    // Получаем только нужное количество товаров
+    const products = await db.execute({
+      sql: `
+        SELECT * FROM products_info 
+        ORDER BY last_update DESC 
+        LIMIT ? OFFSET ?
+      `,
+      args: [limit, offset]
+    });
+    
+    // Получаем общее количество для понимания, есть ли еще
+    const totalCount = await db.execute('SELECT COUNT(*) as count FROM products_info');
+    
+    // Получаем историю цен ТОЛЬКО для этих товаров
+    const codes = products.rows.map(p => p.code);
+    const placeholders = codes.map(() => '?').join(',');
+    
+    const history = await db.execute({
+      sql: `
+        SELECT product_code, price, updated_at
+        FROM price_history
+        WHERE product_code IN (${placeholders})
+        AND updated_at >= datetime('now', '-90 days')
+        ORDER BY product_code, updated_at ASC
+      `,
+      args: codes
+    });
+
+    // Формируем ответ как обычно, но только для 40 товаров
+    const result = products.rows.map(p => {
+      // ... формирование товара как в /api/products
+      return formattedProduct;
+    });
+
+    res.json({
+      products: result,
+      total: totalCount.rows[0].count,
+      hasMore: offset + limit < totalCount.rows[0].count
+    });
+    
+  } catch (err) {
+    console.error('Ошибка пагинации:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// Отдельно для полки пользователя
+app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const limit = parseInt(req.query.limit) || 40;
+    const offset = parseInt(req.query.offset) || 0;
+    
+    const products = await db.execute({
+      sql: `
+        SELECT p.*, us.added_at as shelf_added_at
+        FROM products_info p
+        INNER JOIN user_shelf us ON p.code = us.product_code
+        WHERE us.user_id = ?
+        ORDER BY us.added_at DESC
+        LIMIT ? OFFSET ?
+      `,
+      args: [userId, limit, offset]
+    });
+    
+    // Аналогично получаем общее количество
+    const totalCount = await db.execute({
+      sql: 'SELECT COUNT(*) as count FROM user_shelf WHERE user_id = ?',
+      args: [userId]
+    });
+    
+    res.json({
+      products: products.rows,
+      total: totalCount.rows[0].count,
+      hasMore: offset + limit < totalCount.rows[0].count
+    });
+    
+  } catch (err) {
+    console.error('Ошибка:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
 /**
  * Проверить статус нескольких товаров для текущего пользователя
  */
