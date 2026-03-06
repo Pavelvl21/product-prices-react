@@ -369,6 +369,8 @@ export function formatPriceChangeNotification(product, oldPrice, newPrice) {
   const change = newPrice - oldPrice;
   const percent = ((change / oldPrice) * 100).toFixed(1);
   const isDecrease = change < 0;
+  
+  // Передаем все цены для formatProductFull
   return formatProductFull({
     product_code: product.code,
     product_name: product.name,
@@ -376,8 +378,8 @@ export function formatPriceChangeNotification(product, oldPrice, newPrice) {
     previous_price: oldPrice,
     change: change,
     percent: percent,
-    price: product.price,
-    packPrice: product.packPrice,
+    base_price: product.basePrice || product.price,  // базовая цена
+    packPrice: product.packPrice,                    // актуальная цена
     monthly_payment: product.monthly_payment,
     no_overpayment_max_months: product.no_overpayment_max_months,
     link: product.link,
