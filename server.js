@@ -830,82 +830,107 @@ app.delete('/api/user/shelf/:code', authenticateToken, async (req, res) => {
 
 // Добавь в server.js
 
-// Получить товары с пагинацией
+// ==================== НОВЫЙ ЭНДПОИНТ С ПАГИНАЦИЕЙ ====================
 app.get('/api/products/paginated', authenticateToken, async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 40;
     const offset = parseInt(req.query.offset) || 0;
     
-    // Получаем только нужное количество товаров
-    const products = await db.execute({
-      sql: `
-        SELECT * FROM products_info 
-        ORDER BY last_update DESC 
-        LIMIT ? OFFSET ?
-      `,
-      args: [limit, offset]
-    });
+    console.log(`📊 Запрос пагинации: limit=${limit}, offset=${offset}`);
+
+    // ВАЖНО: Используем ТОТ ЖЕ синтаксис, что и в старом эндпоинте!
+    const products = await db.execute(`
+      SELECT * FROM products_info 
+      ORDER BY last_update DESC 
+      LIMIT ${limit} OFFSET ${offset}
+    `);
     
-    // Получаем общее количество для понимания, есть ли еще
+    // Общее количество
     const totalCount = await db.execute('SELECT COUNT(*) as count FROM products_info');
     
-    // Получаем историю цен ТОЛЬКО для этих товаров
-    const codes = products.rows.map(p => p.code);
-    const placeholders = codes.map(() => '?').join(',');
+    if (products.rows.length === 0) {
+      return res.json({
+        products: [],
+        total: totalCount.rows[0].count,
+        hasMore: false
+      });
+    }
+
+    // Получаем коды товаров
+    const codes = products.rows.map(p => `'${p.code}'`).join(',');
     
-    const history = await db.execute({
-      sql: `
-        SELECT product_code, price, updated_at
-        FROM price_history
-        WHERE product_code IN (${placeholders})
-        AND updated_at >= datetime('now', '-90 days')
-        ORDER BY product_code, updated_at ASC
-      `,
-      args: codes
+    // Получаем историю цен
+    const history = await db.execute(`
+      SELECT product_code, price, updated_at
+      FROM price_history
+      WHERE product_code IN (${codes})
+      AND updated_at >= datetime('now', '-90 days')
+      ORDER BY product_code, updated_at ASC
+    `);
+
+    // Группируем историю
+    const historyByProduct = {};
+    history.rows.forEach(row => {
+      if (!historyByProduct[row.product_code]) {
+        historyByProduct[row.product_code] = [];
+      }
+      historyByProduct[row.product_code].push({
+        date: row.updated_at,
+        price: row.price
+      });
     });
 
-    // Формируем ответ как обычно, но только для 40 товаров
-    const result = products.rows.map(p => {
-      // ... формирование товара как в /api/products
-      return formattedProduct;
-    });
+    // Формируем результат
+    const result = products.rows.map(p => ({
+      code: p.code,
+      name: p.name,
+      link: p.link,
+      category: p.category || 'Товары',
+      brand: p.brand || 'Без бренда',
+      packPrice: p.packPrice,
+      monthly_payment: p.monthly_payment,
+      no_overpayment_max_months: p.no_overpayment_max_months,
+      currentPrice: p.last_price,
+      lastUpdate: p.last_update,
+      priceHistory: historyByProduct[p.code] || []
+    }));
 
     res.json({
       products: result,
       total: totalCount.rows[0].count,
       hasMore: offset + limit < totalCount.rows[0].count
     });
-    
+
   } catch (err) {
-    console.error('Ошибка пагинации:', err);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    console.error('❌ Ошибка в /api/products/paginated:', err);
+    res.status(500).json({ 
+      error: 'Ошибка сервера',
+      details: err.message 
+    });
   }
 });
 
-// Отдельно для полки пользователя
+// ==================== ПОЛКА ПОЛЬЗОВАТЕЛЯ С ПАГИНАЦИЕЙ ====================
 app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const limit = parseInt(req.query.limit) || 40;
     const offset = parseInt(req.query.offset) || 0;
     
-    const products = await db.execute({
-      sql: `
-        SELECT p.*, us.added_at as shelf_added_at
-        FROM products_info p
-        INNER JOIN user_shelf us ON p.code = us.product_code
-        WHERE us.user_id = ?
-        ORDER BY us.added_at DESC
-        LIMIT ? OFFSET ?
-      `,
-      args: [userId, limit, offset]
-    });
+    const products = await db.execute(`
+      SELECT p.*, us.added_at as shelf_added_at
+      FROM products_info p
+      INNER JOIN user_shelf us ON p.code = us.product_code
+      WHERE us.user_id = ${userId}
+      ORDER BY us.added_at DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `);
     
-    // Аналогично получаем общее количество
-    const totalCount = await db.execute({
-      sql: 'SELECT COUNT(*) as count FROM user_shelf WHERE user_id = ?',
-      args: [userId]
-    });
+    const totalCount = await db.execute(`
+      SELECT COUNT(*) as count 
+      FROM user_shelf 
+      WHERE user_id = ${userId}
+    `);
     
     res.json({
       products: products.rows,
@@ -914,8 +939,8 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
     });
     
   } catch (err) {
-    console.error('Ошибка:', err);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    console.error('❌ Ошибка полки:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
