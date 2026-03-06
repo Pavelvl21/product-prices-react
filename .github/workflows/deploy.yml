@@ -1,4 +1,4 @@
-name: Deploy to Render
+name: Deploy to Vercel
 
 on:
   push:
@@ -10,6 +10,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Deploy to Render
-        run: |
-          curl -X POST "https://api.render.com/deploy/${{ secrets.RENDER_DEPLOY_HOOK }}"
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+      
+      - name: Deploy to Vercel
+        run: vercel --prod --token=${{ secrets.VERCEL_TOKEN }} --yes
