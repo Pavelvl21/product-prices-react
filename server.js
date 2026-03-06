@@ -139,23 +139,6 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// ==================== ПУБЛИЧНЫЙ ЭНДПОИНТ ДЛЯ БРЕНДОВ ====================
-app.get('/api/public/brands', async (req, res) => {
-  try {
-    const result = await db.execute(`
-      SELECT DISTINCT brand 
-      FROM products_info 
-      WHERE brand IS NOT NULL AND brand != ''
-      ORDER BY brand
-    `);
-    
-    res.json({ brands: result.rows.map(row => row.brand) });
-    
-  } catch (err) {
-    console.error('Ошибка получения брендов:', err);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
 // ==================== ПУБЛИЧНЫЙ ЭНДПОИНТ ДЛЯ КАТЕГОРИЙ ====================
 
 app.get('/api/public/categories', async (req, res) => {
@@ -171,6 +154,24 @@ app.get('/api/public/categories', async (req, res) => {
     
   } catch (err) {
     console.error('Ошибка получения категорий:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// ==================== ПУБЛИЧНЫЙ ЭНДПОИНТ ДЛЯ БРЕНДОВ ====================
+app.get('/api/public/brands', async (req, res) => {
+  try {
+    const result = await db.execute(`
+      SELECT DISTINCT brand 
+      FROM products_info 
+      WHERE brand IS NOT NULL AND brand != ''
+      ORDER BY brand
+    `);
+    
+    res.json({ brands: result.rows.map(row => row.brand) });
+    
+  } catch (err) {
+    console.error('Ошибка получения брендов:', err);
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
@@ -599,36 +600,37 @@ app.get('/api/products', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== ПАГИНИРОВАННЫЙ ЭНДПОИНТ ДЛЯ МАТРИЦЫ+ С ФИЛЬТРАЦИЕЙ ====================
+// ==================== ПАГИНИРОВАННЫЙ ЭНДПОИНТ ДЛЯ МАТРИЦЫ+ С МУЛЬТИФИЛЬТРАМИ ====================
 app.get('/api/products/paginated', authenticateToken, async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 8;
+    const limit = parseInt(req.query.limit) || 16;
     const offset = parseInt(req.query.offset) || 0;
-    const category = req.query.category ? decodeURIComponent(req.query.category) : null;
-    const brand = req.query.brand ? decodeURIComponent(req.query.brand) : null;
-    const search = req.query.search ? decodeURIComponent(req.query.search) : null;
+    const categories = req.query.categories ? 
+      (Array.isArray(req.query.categories) ? req.query.categories : [req.query.categories]) : [];
+    const brands = req.query.brands ? 
+      (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
+    const search = req.query.search;
     
-    console.log(`📊 Запрос пагинации: limit=${limit}, offset=${offset}, category=${category}, brand=${brand}, search=${search}`);
+    console.log(`📊 Запрос пагинации матрицы: limit=${limit}, offset=${offset}, categories=${categories}, brands=${brands}, search=${search}`);
 
-    // Строим WHERE условие на основе фильтров
+    // Строим WHERE условие
     let whereConditions = [];
-    let whereClause = '';
     
-    if (category && category !== '') {
-      whereConditions.push(`category = '${category}'`);
+    if (categories.length > 0) {
+      const cats = categories.map(c => `'${c}'`).join(',');
+      whereConditions.push(`category IN (${cats})`);
     }
-    if (brand && brand !== '') {
-      whereConditions.push(`brand = '${brand}'`);
+    if (brands.length > 0) {
+      const brds = brands.map(b => `'${b}'`).join(',');
+      whereConditions.push(`brand IN (${brds})`);
     }
     if (search && search !== '') {
       whereConditions.push(`(name LIKE '%${search}%' OR code LIKE '%${search}%')`);
     }
     
-    if (whereConditions.length > 0) {
-      whereClause = 'WHERE ' + whereConditions.join(' AND ');
-    }
+    const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
 
-    // Получаем ТОЛЬКО товары, соответствующие фильтрам, с пагинацией
+    // Получаем товары с пагинацией
     const products = await db.execute(`
       SELECT * FROM products_info 
       ${whereClause}
@@ -636,7 +638,7 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
       LIMIT ${limit} OFFSET ${offset}
     `);
     
-    // Получаем общее количество товаров С УЧЕТОМ ФИЛЬТРОВ
+    // Получаем общее количество
     const totalCount = await db.execute(`
       SELECT COUNT(*) as count FROM products_info 
       ${whereClause}
@@ -673,7 +675,7 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
       });
     });
 
-    // Формируем результат с историей цен
+    // Формируем результат
     const result = products.rows.map(p => ({
       code: p.code,
       name: p.name,
@@ -707,32 +709,49 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
 // ==================== ЭНДПОИНТЫ ДЛЯ УПРАВЛЕНИЯ ПОЛКОЙ ПОЛЬЗОВАТЕЛЯ ====================
 
 /**
- * Получить все товары на полке текущего пользователя
+ * Получить все товары на полке текущего пользователя (с фильтрацией)
  */
-// ==================== ПОЛКА ПОЛЬЗОВАТЕЛЯ С ПОИСКОМ ====================
 app.get('/api/user/shelf', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    const category = req.query.category;
-    const brand = req.query.brand;
+    const categories = req.query.categories ? 
+      (Array.isArray(req.query.categories) ? req.query.categories : [req.query.categories]) : [];
+    const brands = req.query.brands ? 
+      (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
     const search = req.query.search;
     
+    console.log(`📦 Запрос полки: userId=${userId}, categories=${categories}, brands=${brands}, search=${search}`);
+
     let query = `
-      SELECT p.*, us.added_at as shelf_added_at
+      SELECT 
+        p.code,
+        p.name,
+        p.last_price,
+        p.base_price,
+        p.packPrice,
+        p.monthly_payment,
+        p.no_overpayment_max_months,
+        p.category,
+        p.brand,
+        p.link,
+        p.last_update,
+        us.added_at as shelf_added_at
       FROM products_info p
       INNER JOIN user_shelf us ON p.code = us.product_code
       WHERE us.user_id = ${userId}
     `;
     
-    if (category) {
-      query += ` AND p.category = '${category}'`;
+    if (categories.length > 0) {
+      const cats = categories.map(c => `'${c}'`).join(',');
+      query += ` AND p.category IN (${cats})`;
     }
     
-    if (brand) {
-      query += ` AND p.brand = '${brand}'`;
+    if (brands.length > 0) {
+      const brds = brands.map(b => `'${b}'`).join(',');
+      query += ` AND p.brand IN (${brds})`;
     }
     
-    if (search) {
+    if (search && search !== '') {
       query += ` AND (p.name LIKE '%${search}%' OR p.code LIKE '%${search}%')`;
     }
     
@@ -740,7 +759,6 @@ app.get('/api/user/shelf', authenticateToken, async (req, res) => {
     
     const products = await db.execute(query);
     
-    // Получаем историю цен для этих товаров
     if (products.rows.length > 0) {
       const codes = products.rows.map(p => `'${p.code}'`).join(',');
       
@@ -771,7 +789,7 @@ app.get('/api/user/shelf', authenticateToken, async (req, res) => {
     res.json({ products: products.rows });
     
   } catch (err) {
-    console.error('Ошибка полки:', err);
+    console.error('❌ Ошибка полки:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -837,26 +855,30 @@ app.delete('/api/user/shelf/:code', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== ПАГИНИРОВАННЫЙ ЭНДПОИНТ ДЛЯ ПОЛКИ С ФИЛЬТРАЦИЕЙ ====================
+// ==================== ПАГИНИРОВАННЫЙ ЭНДПОИНТ ДЛЯ ПОЛКИ С МУЛЬТИФИЛЬТРАМИ ====================
 app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const limit = parseInt(req.query.limit) || 8;
     const offset = parseInt(req.query.offset) || 0;
-    const category = req.query.category ? decodeURIComponent(req.query.category) : null;
-    const brand = req.query.brand ? decodeURIComponent(req.query.brand) : null;
-    const search = req.query.search ? decodeURIComponent(req.query.search) : null;
+    const categories = req.query.categories ? 
+      (Array.isArray(req.query.categories) ? req.query.categories : [req.query.categories]) : [];
+    const brands = req.query.brands ? 
+      (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
+    const search = req.query.search;
     
-    console.log(`📦 Запрос полки: userId=${userId}, limit=${limit}, offset=${offset}, category=${category}, brand=${brand}, search=${search}`);
+    console.log(`📦 Запрос полки с пагинацией: userId=${userId}, limit=${limit}, offset=${offset}, categories=${categories}, brands=${brands}, search=${search}`);
 
-    // Строим WHERE условие на основе фильтров
+    // Строим WHERE условие
     let whereConditions = [`us.user_id = ${userId}`];
     
-    if (category && category !== '') {
-      whereConditions.push(`p.category = '${category}'`);
+    if (categories.length > 0) {
+      const cats = categories.map(c => `'${c}'`).join(',');
+      whereConditions.push(`p.category IN (${cats})`);
     }
-    if (brand && brand !== '') {
-      whereConditions.push(`p.brand = '${brand}'`);
+    if (brands.length > 0) {
+      const brds = brands.map(b => `'${b}'`).join(',');
+      whereConditions.push(`p.brand IN (${brds})`);
     }
     if (search && search !== '') {
       whereConditions.push(`(p.name LIKE '%${search}%' OR p.code LIKE '%${search}%')`);
@@ -864,7 +886,7 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
     
     const whereClause = 'WHERE ' + whereConditions.join(' AND ');
 
-    // Получаем товары с полки С УЧЕТОМ ФИЛЬТРОВ
+    // Получаем товары с полки с пагинацией
     const products = await db.execute(`
       SELECT 
         p.code,
@@ -931,7 +953,7 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
     });
     
   } catch (err) {
-    console.error('❌ Ошибка полки:', err);
+    console.error('❌ Ошибка полки с пагинацией:', err);
     res.status(500).json({ error: err.message });
   }
 });
