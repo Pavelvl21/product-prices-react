@@ -1,3 +1,4 @@
+// priceUpdater.js
 import db from './database.js';
 import { sendTelegramMessage, formatPriceChangeNotification } from './telegramBot.js';
 import { notifyPriceChange } from './telegramBroadcast.js';
@@ -63,6 +64,14 @@ async function saveProductData(product, timestamp) {
       packPrice
     };
 
+    // === НОВАЯ ЛОГИКА: проверяем, есть ли товар в мониторинге ===
+    const monitoringUsers = await db.execute({
+      sql: 'SELECT user_id FROM user_shelf WHERE product_code = ?',
+      args: [code]
+    });
+
+    const isMonitored = monitoringUsers.rows.length > 0;
+
     if (todayRecord.rows.length === 0) {
       // Первая запись за сегодня
       if (lastPrice !== undefined && Math.abs(realPrice - lastPrice) > 0.01) {
@@ -75,16 +84,16 @@ async function saveProductData(product, timestamp) {
           realPrice
         );
         
-        // Отправка админу
-       // await sendTelegramMessage(notification);
-        
-        // Отправка всем подписанным на категорию
-        await notifyPriceChange(
-          productWithPrices,
-          lastPrice,
-          realPrice,
-          formatPriceChangeNotification
-        );
+        // Отправка уведомлений ТОЛЬКО если товар в чьем-то мониторинге
+        if (isMonitored) {
+          // Отправка всем подписанным на категорию
+          await notifyPriceChange(
+            productWithPrices,
+            lastPrice,
+            realPrice,
+            formatPriceChangeNotification
+          );
+        }
       } else {
         // Первая запись, но цена не изменилась
         await insertPriceRecord(code, product.name, realPrice, now);
@@ -101,16 +110,16 @@ async function saveProductData(product, timestamp) {
           realPrice
         );
         
-        // Отправка админу
-        //await sendTelegramMessage(notification);
-        
-        // Отправка всем подписанным на категорию
-        await notifyPriceChange(
-          productWithPrices,
-          lastPrice,
-          realPrice,
-          formatPriceChangeNotification
-        );
+        // Отправка уведомлений ТОЛЬКО если товар в чьем-то мониторинге
+        if (isMonitored) {
+          // Отправка всем подписанным на категорию
+          await notifyPriceChange(
+            productWithPrices,
+            lastPrice,
+            realPrice,
+            formatPriceChangeNotification
+          );
+        }
       }
     }
 
