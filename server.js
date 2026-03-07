@@ -69,14 +69,15 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.static('public'));
 
 app.use((req, res, next) => {
-  const allowedOrigins = [
-    'https://price-hunter-bel.vercel.app',
-    'http://localhost:3000',
-    'http://localhost:5173'
-  ];
-  
+  // Разрешаем все адреса GitHub Codespaces
   const origin = req.headers.origin;
-  if (allowedOrigins.includes(origin)) {
+  
+  // Проверяем, разрешён ли origin
+  if (origin && (
+    origin.includes('.app.github.dev') || // GitHub Codespaces
+    origin.includes('localhost') || // Локальная разработка
+    origin === 'https://price-hunter-bel.vercel.app' // Продакшен
+  )) {
     res.header('Access-Control-Allow-Origin', origin);
   }
   
