@@ -1069,10 +1069,8 @@ app.get('/api/filter-stats', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== ПОЛУЧЕНИЕ ДОСТУПНЫХ БРЕНДОВ ПО КАТЕГОРИЯМ ====================
-// server.js - добавь или обнови этот эндпоинт
 
-// ==================== ПОЛУЧЕНИЕ ДОСТУПНЫХ ОПЦИЙ ФИЛЬТРОВ ====================
+// ==================== ПОЛУЧЕНИЕ ОПЦИЙ ФИЛЬТРОВ ====================
 app.get('/api/filter-options', authenticateToken, async (req, res) => {
   try {
     const categories = req.query.categories ? 
@@ -1085,54 +1083,53 @@ app.get('/api/filter-options', authenticateToken, async (req, res) => {
       brandCounts: {}
     };
 
-    // Если выбраны бренды, получаем доступные категории с количеством
+    // --- СЛУЧАЙ 1: ЕСТЬ ПАРАМЕТРЫ (фильтруем) ---
     if (brands.length > 0) {
-      const brandPlaceholders = brands.map(() => '?').join(',');
-      const categoriesResult = await db.execute({
-        sql: `
-          SELECT category, COUNT(*) as count 
-          FROM products_info 
-          WHERE brand IN (${brandPlaceholders})
-          AND category IS NOT NULL AND category != ''
-          GROUP BY category
-          ORDER BY category
-        `,
-        args: brands
-      });
-      
-      categoriesResult.rows.forEach(row => {
-        response.categoryCounts[row.category] = row.count;
-      });
+      // ... (твой существующий код для фильтрации по брендам)
     }
 
-    // Если выбраны категории, получаем доступные бренды с количеством
     if (categories.length > 0) {
-      const categoryPlaceholders = categories.map(() => '?').join(',');
-      const brandsResult = await db.execute({
-        sql: `
-          SELECT brand, COUNT(*) as count 
-          FROM products_info 
-          WHERE category IN (${categoryPlaceholders})
-          AND brand IS NOT NULL AND brand != ''
-          GROUP BY brand
-          ORDER BY brand
-        `,
-        args: categories
+      // ... (твой существующий код для фильтрации по категориям)
+    }
+
+    // --- СЛУЧАЙ 2: НЕТ ПАРАМЕТРОВ (отдаем общую статистику) ---
+    if (brands.length === 0 && categories.length === 0) {
+      console.log('📊 Запрос общей статистики для фильтров');
+      
+      // Получаем общее количество товаров в каждой категории
+      const allCategories = await db.execute(`
+        SELECT category, COUNT(*) as count 
+        FROM products_info 
+        WHERE category IS NOT NULL AND category != ''
+        GROUP BY category
+        ORDER BY category
+      `);
+      
+      // Получаем общее количество товаров в каждом бренде
+      const allBrands = await db.execute(`
+        SELECT brand, COUNT(*) as count 
+        FROM products_info 
+        WHERE brand IS NOT NULL AND brand != ''
+        GROUP BY brand
+        ORDER BY brand
+      `);
+
+      allCategories.rows.forEach(row => {
+        response.categoryCounts[row.category] = row.count;
       });
       
-      brandsResult.rows.forEach(row => {
+      allBrands.rows.forEach(row => {
         response.brandCounts[row.brand] = row.count;
       });
     }
 
-    // Если ничего не выбрано, возвращаем пустые объекты (фронт сам покажет все)
     res.json(response);
     
   } catch (err) {
-    console.error('Ошибка получения опций фильтров:', err);
+    console.error('❌ Ошибка получения опций фильтров:', err);
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
-});;
+});
 
 setupBotEndpoints(app, authenticateToken);
 
