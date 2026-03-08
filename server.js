@@ -600,6 +600,101 @@ app.get('/api/products', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
+
+// ==================== ПОИСК ТОВАРА НА 21VEK.BY ====================
+app.post('/api/search-product', authenticateToken, async (req, res) => {
+  try {
+    const { code } = req.body;
+    
+    console.log(`🔍 Поиск товара с кодом: ${code}`);
+
+    // Запрос к API 21vek.by
+    const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
+      headers: {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+      },
+      body: JSON.stringify({
+        ids: [parseInt(code)],
+        isAdult: false,
+        limit: 1
+      }),
+      method: "POST"
+    });
+
+    if (!response.ok) {
+      return res.status(404).json({ error: 'Товар не найден' });
+    }
+
+    const data = await response.json();
+    const product = data.data?.productCards?.[0];
+
+    if (!product) {
+      return res.status(404).json({ error: 'Товар не найден' });
+    }
+
+    // Получаем информацию о рассрочке
+    let monthly_payment = null;
+    let no_overpayment_max_months = null;
+
+    try {
+      const partlyPayResponse = await fetch("https://gate.21vek.by/partly-pay/v2/products.calculate", {
+        method: "POST",
+        headers: {
+          "accept": "application/json",
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({ 
+          data: { 
+            products: [{
+              code: parseInt(code),
+              price: parseFloat(product.packPrice || product.price)
+            }]
+          } 
+        })
+      });
+
+      if (partlyPayResponse.ok) {
+        const partlyPayResult = await partlyPayResponse.json();
+        if (partlyPayResult.data && partlyPayResult.data[0]) {
+          monthly_payment = partlyPayResult.data[0].monthly_payment;
+          no_overpayment_max_months = partlyPayResult.data[0].no_overpayment_max_months;
+        }
+      }
+    } catch (error) {
+      console.log('⚠️ Ошибка получения рассрочки, но товар найден');
+    }
+
+    // Определяем категорию
+    let category = 'Товары';
+    if (product.categories && product.categories.length > 0) {
+      category = product.categories[product.categories.length - 1].name;
+    }
+
+    // Формируем ответ
+    const productInfo = {
+      code: product.code.toString(),
+      name: product.name,
+      link: product.link || '',
+      price: parseFloat(product.packPrice || product.price),
+      base_price: product.price ? parseFloat(product.price) : null,
+      packPrice: product.packPrice ? parseFloat(product.packPrice) : null,
+      category: category,
+      brand: product.producerName || 'Без бренда',
+      monthly_payment: monthly_payment,
+      no_overpayment_max_months: no_overpayment_max_months,
+      image: product.image || null
+    };
+
+    res.json(productInfo);
+
+  } catch (err) {
+    console.error('❌ Ошибка поиска товара:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
 // ==================== ПОЛЬЗОВАТЕЛЬСКИЕ ЭНДПОИНТЫ ====================
 
 // Информация о пользователе
