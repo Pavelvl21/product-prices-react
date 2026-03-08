@@ -429,10 +429,11 @@ app.post('/api/codes', authenticateToken, async (req, res) => {
     });
 
     if (result.rows.length > 0) {
+      // Запускаем обновление в фоне - пользователь не ждет
       updatePricesForNewCode(code).catch(err => {
         console.error(`Ошибка обновления для кода ${code}:`, err);
       });
-      res.status(201).json({ message: 'Код добавлен' });
+      res.status(201).json({ message: 'Код добавлен, данные загружаются' });
     } else {
       res.json({ message: 'Код уже существует' });
     }
@@ -691,6 +692,103 @@ app.post('/api/search-product', authenticateToken, async (req, res) => {
 
   } catch (err) {
     console.error('❌ Ошибка поиска товара:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// ==================== ДОБАВЛЕНИЕ ТОВАРА С ПОЛНЫМИ ДАННЫМИ ====================
+app.post('/api/products/add-full', authenticateToken, async (req, res) => {
+  try {
+    const { 
+      code, 
+      name, 
+      price, 
+      base_price, 
+      packPrice, 
+      category, 
+      brand, 
+      monthly_payment, 
+      no_overpayment_max_months, 
+      link 
+    } = req.body;
+
+    console.log(`📦 Добавление товара ${code} с полными данными`);
+
+    // Проверяем, есть ли уже такой товар
+    const existing = await db.execute({
+      sql: 'SELECT code FROM product_codes WHERE code = ?',
+      args: [code]
+    });
+
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ error: 'Товар уже существует в базе' });
+    }
+
+    // Проверяем лимит
+    const count = await db.execute('SELECT COUNT(*) as c FROM product_codes');
+    if (count.rows[0].c >= 5000) {
+      return res.status(400).json({ error: 'Лимит 5000 товаров' });
+    }
+
+    // Добавляем код в product_codes
+    await db.execute({
+      sql: 'INSERT INTO product_codes (code) VALUES (?)',
+      args: [code]
+    });
+
+    // Сохраняем информацию о товаре
+    const now = new Date();
+    
+    await db.execute({
+      sql: `
+        INSERT INTO products_info (
+          code, name, last_price, base_price, packPrice,
+          monthly_payment, no_overpayment_max_months,
+          link, category, brand, last_update
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(code) DO UPDATE SET
+          name = excluded.name,
+          last_price = excluded.last_price,
+          base_price = excluded.base_price,
+          packPrice = excluded.packPrice,
+          monthly_payment = excluded.monthly_payment,
+          no_overpayment_max_months = excluded.no_overpayment_max_months,
+          link = excluded.link,
+          category = excluded.category,
+          brand = excluded.brand,
+          last_update = excluded.last_update
+      `,
+      args: [
+        code, 
+        name, 
+        price,
+        base_price,
+        packPrice,
+        monthly_payment,
+        no_overpayment_max_months,
+        link || '', 
+        category, 
+        brand, 
+        now.toISOString().slice(0, 19).replace('T', ' ')
+      ]
+    });
+
+    // Создаем первую запись в истории цен
+    await db.execute({
+      sql: 'INSERT INTO price_history (product_code, product_name, price, updated_at) VALUES (?, ?, ?, ?)',
+      args: [code, name, price, now.toISOString().slice(0, 19).replace('T', ' ')]
+    });
+
+    console.log(`✅ Товар ${code} успешно добавлен с полными данными`);
+    res.json({ 
+      success: true, 
+      message: 'Товар успешно добавлен',
+      code 
+    });
+
+  } catch (err) {
+    console.error('❌ Ошибка добавления товара:', err);
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
