@@ -1,4 +1,3 @@
-// priceUpdater.js
 import db from './database.js';
 import { sendTelegramMessage, formatPriceChangeNotification } from './telegramBot.js';
 import { notifyPriceChange } from './telegramBroadcast.js';
@@ -13,17 +12,9 @@ async function insertPriceRecord(code, name, price, timestamp) {
 async function saveProductData(product, timestamp) {
   const code = product.code.toString();
   
-  // realPrice - актуальная цена (со скидкой) для отслеживания изменений
   const realPrice = parseFloat(product.packPrice || product.price);
-  // basePrice - полная стоимость (без скидок) для отображения в "РЦ в рассрочку"
   const basePrice = product.price ? parseFloat(product.price) : null;
   const packPrice = product.packPrice ? parseFloat(product.packPrice) : null;
-  
-  // Логируем полученные цены для отладки
-  console.log(`💰 [saveProductData] Товар ${code}:`);
-  console.log(`   - realPrice (актуальная): ${realPrice}`);
-  console.log(`   - basePrice (полная): ${basePrice}`);
-  console.log(`   - packPrice (дубль): ${packPrice}`);
   
   const now = timestamp || new Date();
   const today = now.toISOString().split('T')[0];
@@ -54,7 +45,6 @@ async function saveProductData(product, timestamp) {
 
     const lastPrice = lastRecord.rows[0]?.price;
 
-    // Создаем объект товара со всеми ценами для уведомлений
     const productWithPrices = {
       ...product,
       code,
@@ -64,29 +54,26 @@ async function saveProductData(product, timestamp) {
       packPrice
     };
 
-    // === НОВАЯ ЛОГИКА: проверяем, есть ли товар в мониторинге ===
-    const monitoringUsers = await db.execute({
-      sql: 'SELECT user_id FROM user_shelf WHERE product_code = ?',
+    // Проверяем, есть ли товар в мониторинге
+    const monitoringCheck = await db.execute({
+      sql: 'SELECT 1 FROM user_shelf WHERE product_code = ? LIMIT 1',
       args: [code]
     });
-
-    const isMonitored = monitoringUsers.rows.length > 0;
+    
+    const isMonitored = monitoringCheck.rows.length > 0;
 
     if (todayRecord.rows.length === 0) {
       // Первая запись за сегодня
       if (lastPrice !== undefined && Math.abs(realPrice - lastPrice) > 0.01) {
-        console.log(`📝 Первая запись за ${today} для ${code} (${lastPrice} → ${realPrice})`);
         await insertPriceRecord(code, product.name, realPrice, now);
         
-        const notification = formatPriceChangeNotification(
-          productWithPrices, 
-          lastPrice, 
-          realPrice
-        );
-        
-        // Отправка уведомлений ТОЛЬКО если товар в чьем-то мониторинге
-        if (isMonitored) {
-          // Отправка всем подписанным на категорию
+        if (isMonitored && lastPrice !== undefined) {
+          const notification = formatPriceChangeNotification(
+            productWithPrices, 
+            lastPrice, 
+            realPrice
+          );
+          
           await notifyPriceChange(
             productWithPrices,
             lastPrice,
@@ -95,24 +82,20 @@ async function saveProductData(product, timestamp) {
           );
         }
       } else {
-        // Первая запись, но цена не изменилась
         await insertPriceRecord(code, product.name, realPrice, now);
       }
       
     } else {
       if (lastPrice !== undefined && Math.abs(realPrice - lastPrice) > 0.01) {
-        console.log(`🔄 Цена изменилась для ${code}: ${lastPrice} → ${realPrice}`);
         await insertPriceRecord(code, product.name, realPrice, now);
         
-        const notification = formatPriceChangeNotification(
-          productWithPrices, 
-          lastPrice, 
-          realPrice
-        );
-        
-        // Отправка уведомлений ТОЛЬКО если товар в чьем-то мониторинге
         if (isMonitored) {
-          // Отправка всем подписанным на категорию
+          const notification = formatPriceChangeNotification(
+            productWithPrices, 
+            lastPrice, 
+            realPrice
+          );
+          
           await notifyPriceChange(
             productWithPrices,
             lastPrice,
@@ -123,7 +106,7 @@ async function saveProductData(product, timestamp) {
       }
     }
 
-    // Сохраняем в products_info с добавленным полем base_price
+    // Сохраняем в products_info
     await db.execute({
       sql: `
         INSERT INTO products_info (
@@ -158,18 +141,14 @@ async function saveProductData(product, timestamp) {
         now.toISOString().slice(0, 19).replace('T', ' ')
       ]
     });
-    
-    console.log(`✅ [saveProductData] Товар ${code} сохранен в БД`);
 
   } catch (error) {
-    console.error(`❌ Ошибка в saveProductData для ${code}:`, error.message);
+    console.error(`❌ Критическая ошибка при сохранении товара ${code}:`, error.message);
     throw error;
   }
 }
 
 export async function updatePricesForNewCode(code) {
-  console.log(`🔄 Начинаем обновление для нового кода: ${code}`);
-
   try {
     const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
       headers: {
@@ -185,7 +164,6 @@ export async function updatePricesForNewCode(code) {
     });
 
     if (!response.ok) {
-      console.error(`❌ Ошибка HTTP для кода ${code}:`, response.status);
       return;
     }
 
@@ -193,7 +171,6 @@ export async function updatePricesForNewCode(code) {
     const product = data.data.productCards[0];
 
     if (!product) {
-      console.log(`📭 Нет данных для кода ${code} от API`);
       return;
     }
 
@@ -224,17 +201,15 @@ export async function updatePricesForNewCode(code) {
     }
 
     await saveProductData(product, now);
-    console.log(`✅ Данные для нового кода ${code} загружены`);
 
   } catch (error) {
-    console.error(`❌ Ошибка при загрузке данных для кода ${code}:`, error.message);
+    console.error(`❌ Критическая ошибка при загрузке кода ${code}:`, error.message);
   }
 }
 
 export async function updateAllPrices() {
   const startTime = Date.now();
-  const startTimeStr = new Date().toLocaleString('ru-RU');
-  console.log(`\n🚀 [UPDATE] Старт обновления в ${startTimeStr}`);
+  console.log(`\n🚀 Запуск планового обновления цен: ${new Date().toLocaleString('ru-RU')}`);
 
   try {
     const codesResult = await db.execute('SELECT code FROM product_codes');
@@ -245,17 +220,13 @@ export async function updateAllPrices() {
       return;
     }
 
-    console.log(`📦 [UPDATE] Всего кодов в базе: ${allCodes.length}`);
-
     const BATCH_SIZE = 100;
-    const CONCURRENT_LIMIT = 3;
+    const CONCURRENT_LIMIT = 2;
     
     const batches = [];
     for (let i = 0; i < allCodes.length; i += BATCH_SIZE) {
       batches.push(allCodes.slice(i, i + BATCH_SIZE));
     }
-    
-    console.log(`📊 Будет обработано ${batches.length} пачек по ${BATCH_SIZE} кодов`);
 
     let processedBatches = 0;
     let totalProcessed = 0;
@@ -267,47 +238,44 @@ export async function updateAllPrices() {
       const batchNum = batchIndex + 1;
       const batchStartTime = new Date();
       
-      console.log(`\n📤 [Пачка ${batchNum}/${batches.length}] Отправка ${batch.length} кодов...`);
+      let batchProcessed = 0;
+      let batchChanged = 0;
+      let batchNewRecords = 0;
+      let batchErrors = 0;
+      
+      let requestDelay = 100; // стартовая задержка 100ms
 
-      try {
-        const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
-          headers: {
-            "accept": "application/json",
-            "content-type": "application/json",
-            "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
-          },
-          body: JSON.stringify({
-            ids: batch.map(code => parseInt(code)),
-            isAdult: false,
-            limit: BATCH_SIZE
-          }),
-          method: "POST"
-        });
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-        const products = data.data?.productCards || [];
-
-        if (products.length === 0) {
-          console.log(`⚠️ [Пачка ${batchNum}] Нет данных от API`);
-          return { processed: 0, changed: 0, newRecords: 0, errors: 0 };
-        }
-
-        console.log(`📥 [Пачка ${batchNum}] Получено ${products.length} товаров`);
-
-        const productsForPartlyPay = [];
-        for (const product of products) {
-          productsForPartlyPay.push({
-            code: parseInt(product.code),
-            price: parseFloat(product.packPrice || product.price)
+      for (const code of batch) {
+        try {
+          batchProcessed++;
+          
+          const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
+            headers: {
+              "accept": "application/json",
+              "content-type": "application/json"
+            },
+            body: JSON.stringify({
+              ids: [parseInt(code)],
+              isAdult: false,
+              limit: 1
+            }),
+            method: "POST"
           });
-        }
 
-        let partlyPayMap = {};
-        if (productsForPartlyPay.length > 0) {
+          if (!response.ok) {
+            batchErrors++;
+            continue;
+          }
+
+          const data = await response.json();
+          const product = data.data.productCards[0];
+
+          if (!product) {
+            batchErrors++;
+            continue;
+          }
+          
+          // Получаем данные рассрочки
           try {
             const partlyPayResponse = await fetch("https://gate.21vek.by/partly-pay/v2/products.calculate", {
               method: "POST",
@@ -317,103 +285,53 @@ export async function updateAllPrices() {
               },
               body: JSON.stringify({ 
                 data: { 
-                  products: productsForPartlyPay 
+                  products: [{
+                    code: parseInt(code),
+                    price: parseFloat(product.packPrice || product.price)
+                  }]
                 } 
               })
             });
 
             if (partlyPayResponse.ok) {
               const partlyPayResult = await partlyPayResponse.json();
-              if (partlyPayResult.data) {
-                partlyPayResult.data.forEach(item => {
-                  partlyPayMap[item.code] = {
-                    monthly_payment: item.monthly_payment,
-                    no_overpayment_max_months: item.no_overpayment_max_months
-                  };
-                });
+              if (partlyPayResult.data && partlyPayResult.data[0]) {
+                product.monthly_payment = partlyPayResult.data[0].monthly_payment;
+                product.no_overpayment_max_months = partlyPayResult.data[0].no_overpayment_max_months;
               }
             }
           } catch (error) {
-            console.error(`❌ [Пачка ${batchNum}] Ошибка запроса рассрочки:`, error.message);
+            // Игнорируем ошибки рассрочки
           }
-        }
-
-        let batchProcessed = 0;
-        let batchChanged = 0;
-        let batchNewRecords = 0;
-        let batchErrors = 0;
-        
-        for (const product of products) {
-          try {
-            batchProcessed++;
-            
-            const today = new Date().toISOString().split('T')[0];
-            
-            const todayRecord = await db.execute({
-              sql: `SELECT id FROM price_history 
-                    WHERE product_code = ? AND DATE(updated_at) = ? 
-                    LIMIT 1`,
-              args: [product.code.toString(), today]
-            });
-            
-            const lastRecord = await db.execute({
-              sql: `SELECT price FROM price_history 
-                    WHERE product_code = ? 
-                    ORDER BY updated_at DESC LIMIT 1`,
-              args: [product.code.toString()]
-            });
-            
-            const lastPrice = lastRecord.rows[0]?.price;
-            const currentPrice = parseFloat(product.packPrice || product.price);
-            
-            const isChanged = lastPrice !== undefined && Math.abs(currentPrice - lastPrice) > 0.01;
-            
-            if (isChanged) {
-              batchChanged++;
-              
-              const changeSymbol = currentPrice > lastPrice ? '⬆️' : '⬇️';
-              const changePercent = ((currentPrice - lastPrice) / lastPrice * 100).toFixed(1);
-              
-              console.log(`   ${changeSymbol} ${product.code}: ${lastPrice} → ${currentPrice} (${changePercent}%)`);
-            }
-            
-            if (todayRecord.rows.length === 0) {
-              batchNewRecords++;
-            }
-            
-            const partlyInfo = partlyPayMap[parseInt(product.code)] || {};
-            const productWithPartly = {
-              ...product,
-              monthly_payment: partlyInfo.monthly_payment,
-              no_overpayment_max_months: partlyInfo.no_overpayment_max_months
-            };
-            
-            await saveProductData(productWithPartly, batchStartTime);
-            
-          } catch (saveError) {
-            batchErrors++;
-            console.error(`   ❌ Ошибка сохранения товара ${product.code}:`, saveError.message);
+          
+          await saveProductData(product, batchStartTime);
+          
+          // Умная задержка между запросами
+          await new Promise(resolve => setTimeout(resolve, requestDelay));
+          
+          // Плавно возвращаем задержку к базовой при успехах
+          if (requestDelay > 100) {
+            requestDelay = Math.max(requestDelay - 5, 100);
           }
+          
+        } catch (error) {
+          batchErrors++;
+          // При ошибке увеличиваем задержку
+          requestDelay = Math.min(requestDelay + 20, 500);
+          await new Promise(resolve => setTimeout(resolve, requestDelay));
         }
-
-        console.log(`✅ [Пачка ${batchNum}] Итог: +${batchChanged} изменений, +${batchNewRecords} новых, ${batchErrors} ошибок`);
-        
-        return { 
-          processed: batchProcessed, 
-          changed: batchChanged, 
-          newRecords: batchNewRecords,
-          errors: batchErrors 
-        };
-
-      } catch (error) {
-        console.error(`❌ [Пачка ${batchNum}] Критическая ошибка:`, error.message);
-        return { processed: 0, changed: 0, newRecords: 0, errors: batch.length };
       }
+
+      return { 
+        processed: batchProcessed, 
+        changed: 0, // Не отслеживаем
+        newRecords: 0,
+        errors: batchErrors 
+      };
     };
 
     for (let i = 0; i < batches.length; i += CONCURRENT_LIMIT) {
       const currentBatches = batches.slice(i, i + CONCURRENT_LIMIT);
-      console.log(`\n🔄 Запуск группы из ${currentBatches.length} параллельных пачек`);
       
       const results = await Promise.all(
         currentBatches.map((batch, idx) => processBatch(batch, i + idx))
@@ -421,29 +339,22 @@ export async function updateAllPrices() {
       
       results.forEach(result => {
         totalProcessed += result.processed || 0;
-        totalChanged += result.changed || 0;
-        totalNewRecords += result.newRecords || 0;
         totalErrors += result.errors || 0;
       });
       
       processedBatches += currentBatches.length;
-      
-      const percentComplete = Math.round((processedBatches / batches.length) * 100);
-      console.log(`\n📊 Прогресс: ${processedBatches}/${batches.length} пачек (${percentComplete}%)`);
-      console.log(`   Обработано: ${totalProcessed}, изменений: ${totalChanged}, ошибок: ${totalErrors}`);
     }
 
     const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
     
-    console.log(`\n🏁 [UPDATE] Завершено в ${new Date().toLocaleString('ru-RU')}`);
-    console.log(`📊 [UPDATE] Статистика: обработано ${totalProcessed}, изменений ${totalChanged}, новых записей ${totalNewRecords}, ошибок ${totalErrors}`);
-    console.log(`⏱️ [UPDATE] Время: ${totalTime} сек`);
+    console.log(`✅ Плановое обновление завершено за ${totalTime} сек`);
+    console.log(`📊 Обработано: ${totalProcessed} товаров, ошибок: ${totalErrors}`);
 
   } catch (error) {
-    console.error('\n❌ ГЛОБАЛЬНАЯ ОШИБКА ПРИ ОБНОВЛЕНИИ ЦЕН:', error.message);
+    console.error('\n❌ КРИТИЧЕСКАЯ ОШИБКА ПРИ ОБНОВЛЕНИИ ЦЕН:', error.message);
     
     await sendTelegramMessage(`
-⚠️ <b>Ошибка при массовом обновлении</b>
+⚠️ <b>Критическая ошибка при массовом обновлении</b>
 
 ${error.message}
 
@@ -453,22 +364,18 @@ ${error.message}
 }
 
 export async function cleanOldRecords() {
-  console.log('🧹 Очистка записей старше 90 дней...');
   try {
     const result = await db.execute({
       sql: "DELETE FROM price_history WHERE updated_at < datetime('now', '-90 days')",
       args: []
     });
-    console.log(`✅ Удалено ${result.rowsAffected} старых записей`);
   } catch (err) {
-    console.error('❌ Ошибка при очистке:', err.message);
+    console.error('❌ Критическая ошибка при очистке:', err.message);
   }
 }
 
 export async function sendWeeklyStats() {
   try {
-    console.log('📊 Формирование недельной статистики...');
-    
     const endDate = new Date();
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - 7);
@@ -567,9 +474,8 @@ export async function sendWeeklyStats() {
     message += `🕐 Период: ${formatDate(startDate)} - ${formatDate(endDate)}`;
 
     await sendTelegramMessage(message);
-    console.log('✅ Недельная статистика отправлена');
 
   } catch (error) {
-    console.error('❌ Ошибка при формировании статистики:', error.message);
+    console.error('❌ Критическая ошибка при формировании статистики:', error.message);
   }
 }
