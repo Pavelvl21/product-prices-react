@@ -1,6 +1,6 @@
 import db from './database.js';
 import { sendTelegramMessage, formatPriceChangeNotification } from './telegramBot.js';
-import { notifyPriceChange } from './telegramBroadcast.js';
+import { notifyProductSubscribers } from './telegramBroadcast.js';
 
 async function insertPriceRecord(code, name, price, timestamp) {
   await db.execute({
@@ -74,12 +74,13 @@ async function saveProductData(product, timestamp) {
             realPrice
           );
           
-          await notifyPriceChange(
-            productWithPrices,
-            lastPrice,
-            realPrice,
-            formatPriceChangeNotification
-          );
+  await notifyProductSubscribers(
+    code,                         // productCode
+    productWithPrices,            // productData (объект с name, basePrice, packPrice и т.д.)
+    lastPrice,                    // oldPrice
+    realPrice,                    // newPrice
+    formatPriceChangeNotification  // formatFunction
+  );
         }
       } else {
         await insertPriceRecord(code, product.name, realPrice, now);
@@ -96,12 +97,13 @@ async function saveProductData(product, timestamp) {
             realPrice
           );
           
-          await notifyPriceChange(
-            productWithPrices,
-            lastPrice,
-            realPrice,
-            formatPriceChangeNotification
-          );
+  await notifyProductSubscribers(
+    code,                         // productCode
+    productWithPrices,            // productData (объект с name, basePrice, packPrice и т.д.)
+    lastPrice,                    // oldPrice
+    realPrice,                    // newPrice
+    formatPriceChangeNotification  // formatFunction
+  );
         }
       }
     }
