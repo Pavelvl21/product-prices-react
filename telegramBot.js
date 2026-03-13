@@ -7,7 +7,6 @@ import {
   formatBroadcastResults,
   formatSubscriberStats,
   sendTestMessage,
-  notifyPriceChange
 } from './telegramBroadcast.js';
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -887,4 +886,3 @@ export async function sendTelegramMessage(message) {
   return await sendMessage(ADMIN_CHAT_ID, message);
 }
 
-export { notifyPriceChange };
