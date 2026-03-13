@@ -7,7 +7,7 @@ import cron from 'node-cron';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import Joi from 'joi';
-import db, { initTables } from './database.js';
+import db, { initTables, updateCategoryBrandRelations } from './database.js';
 import { updateAllPrices, cleanOldRecords, updatePricesForNewCode, sendWeeklyStats } from './priceUpdater.js';
 import { handleTelegramUpdate, setupBotEndpoints } from './telegramBot.js';
 
