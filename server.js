@@ -964,7 +964,7 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
       whereConditions.push(`brand IN (${brds})`);
     }
     if (search && search !== '') {
-      whereConditions.push(`(name LIKE '%${search}%' OR code LIKE '%${search}%')`);
+      whereConditions.push(`(LOWER(name) LIKE LOWER('%${search}%') OR code LIKE '%${search}%')`);
     }
     
     const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
@@ -1091,7 +1091,7 @@ app.get('/api/user/shelf', authenticateToken, async (req, res) => {
     }
     
     if (search && search !== '') {
-      query += ` AND (p.name LIKE '%${search}%' OR p.code LIKE '%${search}%')`;
+      query += ` AND (LOWER(p.name) LIKE LOWER('%${search}%') OR p.code LIKE '%${search}%')`;
     }
     
     query += ` ORDER BY us.added_at DESC`;
