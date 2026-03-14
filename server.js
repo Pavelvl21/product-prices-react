@@ -963,9 +963,10 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
       const brds = brands.map(b => `'${b}'`).join(',');
       whereConditions.push(`brand IN (${brds})`);
     }
-    if (search && search !== '') {
-      whereConditions.push(`(LOWER(name) LIKE LOWER('%${search}%') OR code LIKE '%${search}%')`);
-    }
+if (search && search !== '') {
+  const searchLower = search.toLowerCase();
+  whereConditions.push(`(name_lower LIKE '%${searchLower}%' OR code LIKE '%${search}%')`);
+}
     
     const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
 
@@ -1090,9 +1091,10 @@ app.get('/api/user/shelf', authenticateToken, async (req, res) => {
       query += ` AND p.brand IN (${brds})`;
     }
     
-    if (search && search !== '') {
-      query += ` AND (LOWER(p.name) LIKE LOWER('%${search}%') OR p.code LIKE '%${search}%')`;
-    }
+if (search && search !== '') {
+  const searchLower = search.toLowerCase();
+  query += ` AND (p.name_lower LIKE '%${searchLower}%' OR p.code LIKE '%${search}%')`;
+}
     
     query += ` ORDER BY us.added_at DESC`;
     
@@ -1283,9 +1285,10 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
       const brds = brands.map(b => `'${b}'`).join(',');
       whereConditions.push(`p.brand IN (${brds})`);
     }
-    if (search && search !== '') {
-      whereConditions.push(`(p.name LIKE '%${search}%' OR p.code LIKE '%${search}%')`);
-    }
+if (search && search !== '') {
+  const searchLower = search.toLowerCase();
+  whereConditions.push(`(p.name_lower LIKE '%${searchLower}%' OR p.code LIKE '%${search}%')`);
+}
     
     const whereClause = 'WHERE ' + whereConditions.join(' AND ');
 
