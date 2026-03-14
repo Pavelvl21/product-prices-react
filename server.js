@@ -602,97 +602,119 @@ app.get('/api/products', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== ПОИСК ТОВАРА НА 21VEK.BY ====================
-app.post('/api/search-product', authenticateToken, async (req, res) => {
+// ==================== ПОИСК ПО API 21VEK ====================
+app.get('/api/external/search', authenticateToken, async (req, res) => {
+  console.log('=== НАЧАЛО ЗАПРОСА /api/external/search ===');
+  
   try {
-    const { code } = req.body;
-    
-    console.log(`🔍 Поиск товара с кодом: ${code}`);
+    const { query } = req.query;
+    console.log('1. Получен query параметр:', query);
 
-    // Запрос к API 21vek.by
-    const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
+    if (!query || query.trim() === '') {
+      console.log('2. ОШИБКА: query пустой');
+      return res.status(400).json({ error: 'Поисковый запрос обязателен' });
+    }
+
+    console.log('3. Пользователь авторизован, id:', req.user?.id);
+
+    // Формируем URL для запроса к 21vek
+    const searchUrl = `https://gate.21vek.by/search-composer/api/v1/search/suggest?query=${encodeURIComponent(query)}&mode=desktop`;
+    console.log('4. URL для запроса к 21vek:', searchUrl);
+
+    // Делаем запрос к API 21vek
+    console.log('5. Отправка запроса к 21vek...');
+    const response = await fetch(searchUrl, {
       headers: {
         "accept": "application/json",
-        "content-type": "application/json",
-        "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
-      },
-      body: JSON.stringify({
-        ids: [parseInt(code)],
-        isAdult: false,
-        limit: 1
-      }),
-      method: "POST"
+        "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
     });
 
+    console.log('6. Статус ответа от 21vek:', response.status);
+
     if (!response.ok) {
-      return res.status(404).json({ error: 'Товар не найден' });
-    }
-
-    const data = await response.json();
-    const product = data.data?.productCards?.[0];
-
-    if (!product) {
-      return res.status(404).json({ error: 'Товар не найден' });
-    }
-
-    // Получаем информацию о рассрочке
-    let monthly_payment = null;
-    let no_overpayment_max_months = null;
-
-    try {
-      const partlyPayResponse = await fetch("https://gate.21vek.by/partly-pay/v2/products.calculate", {
-        method: "POST",
-        headers: {
-          "accept": "application/json",
-          "content-type": "application/json"
-        },
-        body: JSON.stringify({ 
-          data: { 
-            products: [{
-              code: parseInt(code),
-              price: parseFloat(product.packPrice || product.price)
-            }]
-          } 
-        })
+      console.error(`❌ Ошибка ответа от 21vek: ${response.status}`);
+      return res.status(502).json({ 
+        error: 'Ошибка при обращении к внешнему API',
+        status: response.status 
       });
+    }
 
-      if (partlyPayResponse.ok) {
-        const partlyPayResult = await partlyPayResponse.json();
-        if (partlyPayResult.data && partlyPayResult.data[0]) {
-          monthly_payment = partlyPayResult.data[0].monthly_payment;
-          no_overpayment_max_months = partlyPayResult.data[0].no_overpayment_max_months;
+    // Получаем данные
+    console.log('7. Чтение ответа от 21vek...');
+    const data = await response.json();
+    console.log('8. Получены данные от 21vek, структура:', Object.keys(data));
+
+    // Извлекаем товары
+    console.log('9. Поиск секции products в ответе...');
+    const products = [];
+    const productsGroup = data.data?.find(group => group.group_type === 'products');
+    
+    console.log('10. Найдена группа products:', !!productsGroup);
+    
+    if (productsGroup && productsGroup.items) {
+      console.log(`11. Количество товаров в группе: ${productsGroup.items.length}`);
+      
+      for (const item of productsGroup.items) {
+        console.log('12. Обработка товара:', item.product_id);
+        
+        const cleanCode = item.product_id?.replace(/\./g, '') || '';
+        if (!cleanCode) continue;
+
+        // Парсим цену
+        let price = null;
+        if (item.price && item.price !== 'нет на складе') {
+          const priceStr = item.price.replace(/\s/g, '').replace(',', '.');
+          price = parseFloat(priceStr);
         }
+
+        // 🔥 ИСПРАВЛЕНО: db.get -> db.execute + rows[0]
+        let exists = false;
+        try {
+          const existingResult = await db.execute({
+            sql: 'SELECT code FROM products_info WHERE code = ?',
+            args: [cleanCode]
+          });
+          exists = existingResult.rows.length > 0;
+        } catch (dbErr) {
+          console.error('13. Ошибка проверки БД:', dbErr);
+        }
+
+        products.push({
+          code: cleanCode,
+          originalCode: item.product_id,
+          name: item.name || 'Без названия',
+          price: price || 0,
+          currentPrice: price || 0,
+          url: item.url || null,
+          image: item.image || null,
+          exists: exists,
+          fromExternal: true
+        });
       }
-    } catch (error) {
-      console.log('⚠️ Ошибка получения рассрочки, но товар найден');
     }
 
-    // Определяем категорию
-    let category = 'Товары';
-    if (product.categories && product.categories.length > 0) {
-      category = product.categories[product.categories.length - 1].name;
-    }
-
-    // Формируем ответ
-    const productInfo = {
-      code: product.code.toString(),
-      name: product.name,
-      link: product.link || '',
-      price: parseFloat(product.packPrice || product.price),
-      base_price: product.price ? parseFloat(product.price) : null,
-      packPrice: product.packPrice ? parseFloat(product.packPrice) : null,
-      category: category,
-      brand: product.producerName || 'Без бренда',
-      monthly_payment: monthly_payment,
-      no_overpayment_max_months: no_overpayment_max_months,
-      image: product.image || null
-    };
-
-    res.json(productInfo);
+    console.log(`✅ Успешно обработано ${products.length} товаров`);
+    console.log('=== КОНЕЦ ЗАПРОСА ===');
+    
+    res.json({ 
+      query,
+      products 
+    });
 
   } catch (err) {
-    console.error('❌ Ошибка поиска товара:', err);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    console.error('❌ КРИТИЧЕСКАЯ ОШИБКА ВНЕШНЕГО ПОИСКА:');
+    console.error('Имя ошибки:', err.name);
+    console.error('Сообщение:', err.message);
+    console.error('Стек:', err.stack);
+    console.log('=== КОНЕЦ ЗАПРОСА С ОШИБКОЙ ===');
+    
+    res.status(500).json({ 
+      error: 'Внутренняя ошибка сервера',
+      details: err.message,
+      name: err.name
+    });
   }
 });
 
@@ -714,24 +736,25 @@ app.post('/api/products/add-full', authenticateToken, async (req, res) => {
 
     console.log(`📦 Добавление товара ${code} с полными данными`);
 
-    // Проверяем, есть ли уже такой товар
-    const existing = await db.get({
+    // 🔥 ИСПРАВЛЕНО: db.get -> db.execute + rows[0]
+    const existingResult = await db.execute({
       sql: 'SELECT code FROM product_codes WHERE code = ?',
       args: [code]
     });
 
-    if (existing) {
+    if (existingResult.rows.length > 0) {
       return res.status(400).json({ error: 'Товар уже существует в базе' });
     }
 
-    // Проверяем лимит
-    const count = await db.get('SELECT COUNT(*) as count FROM product_codes');
+    // 🔥 ИСПРАВЛЕНО: db.get -> db.execute + rows[0]
+    const countResult = await db.execute('SELECT COUNT(*) as count FROM product_codes');
+    const count = countResult.rows[0];
     if (count.count >= 5000) {
       return res.status(400).json({ error: 'Лимит 5000 товаров' });
     }
 
-    // Добавляем код в product_codes
-    await db.run({
+    // 🔥 ИСПРАВЛЕНО: db.run -> db.execute
+    await db.execute({
       sql: 'INSERT INTO product_codes (code) VALUES (?)',
       args: [code]
     });
@@ -739,49 +762,50 @@ app.post('/api/products/add-full', authenticateToken, async (req, res) => {
     // Сохраняем информацию о товаре
     const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
     
-// Создаем версию в нижнем регистре
-const nameLower = name ? name.toLowerCase() : '';
+    // Создаем версию в нижнем регистре
+    const nameLower = name ? name.toLowerCase() : '';
 
-await db.run({
-  sql: `
-    INSERT INTO products_info (
-      code, name, last_price, base_price, packPrice,
-      monthly_payment, no_overpayment_max_months,
-      link, category, brand, last_update,
-      name_lower
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(code) DO UPDATE SET
-      name = excluded.name,
-      last_price = excluded.last_price,
-      base_price = excluded.base_price,
-      packPrice = excluded.packPrice,
-      monthly_payment = excluded.monthly_payment,
-      no_overpayment_max_months = excluded.no_overpayment_max_months,
-      link = excluded.link,
-      category = excluded.category,
-      brand = excluded.brand,
-      last_update = excluded.last_update,
-      name_lower = excluded.name_lower
-  `,
-  args: [
-    code, 
-    name, 
-    price,
-    base_price,
-    packPrice,
-    monthly_payment,
-    no_overpayment_max_months,
-    link || '', 
-    category, 
-    brand, 
-    now,
-    nameLower  // 👈 новое значение
-  ]
-});
+    // 🔥 ИСПРАВЛЕНО: db.run -> db.execute
+    await db.execute({
+      sql: `
+        INSERT INTO products_info (
+          code, name, last_price, base_price, packPrice,
+          monthly_payment, no_overpayment_max_months,
+          link, category, brand, last_update,
+          name_lower
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(code) DO UPDATE SET
+          name = excluded.name,
+          last_price = excluded.last_price,
+          base_price = excluded.base_price,
+          packPrice = excluded.packPrice,
+          monthly_payment = excluded.monthly_payment,
+          no_overpayment_max_months = excluded.no_overpayment_max_months,
+          link = excluded.link,
+          category = excluded.category,
+          brand = excluded.brand,
+          last_update = excluded.last_update,
+          name_lower = excluded.name_lower
+      `,
+      args: [
+        code, 
+        name, 
+        price,
+        base_price,
+        packPrice,
+        monthly_payment,
+        no_overpayment_max_months,
+        link || '', 
+        category, 
+        brand, 
+        now,
+        nameLower
+      ]
+    });
 
-    // Создаем первую запись в истории цен
-    await db.run({
+    // 🔥 ИСПРАВЛЕНО: db.run -> db.execute
+    await db.execute({
       sql: 'INSERT INTO price_history (product_code, product_name, price, updated_at) VALUES (?, ?, ?, ?)',
       args: [code, name, price, now]
     });
