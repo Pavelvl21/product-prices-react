@@ -109,40 +109,45 @@ async function saveProductData(product, timestamp) {
     }
 
     // Сохраняем в products_info
-    await db.execute({
-      sql: `
-        INSERT INTO products_info (
-          code, name, last_price, base_price, packPrice,
-          monthly_payment, no_overpayment_max_months,
-          link, category, brand, last_update
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(code) DO UPDATE SET
-          name = excluded.name,
-          last_price = excluded.last_price,
-          base_price = excluded.base_price,
-          packPrice = excluded.packPrice,
-          monthly_payment = excluded.monthly_payment,
-          no_overpayment_max_months = excluded.no_overpayment_max_months,
-          link = excluded.link,
-          category = excluded.category,
-          brand = excluded.brand,
-          last_update = excluded.last_update
-      `,
-      args: [
-        code, 
-        product.name, 
-        realPrice,
-        basePrice,
-        packPrice,
-        monthly_payment,
-        no_overpayment_max_months,
-        product.link || '', 
-        category, 
-        brand, 
-        now.toISOString().slice(0, 19).replace('T', ' ')
-      ]
-    });
+const nameLower = product.name ? product.name.toLowerCase() : '';
+
+await db.execute({
+  sql: `
+    INSERT INTO products_info (
+      code, name, last_price, base_price, packPrice,
+      monthly_payment, no_overpayment_max_months,
+      link, category, brand, last_update,
+      name_lower
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(code) DO UPDATE SET
+      name = excluded.name,
+      last_price = excluded.last_price,
+      base_price = excluded.base_price,
+      packPrice = excluded.packPrice,
+      monthly_payment = excluded.monthly_payment,
+      no_overpayment_max_months = excluded.no_overpayment_max_months,
+      link = excluded.link,
+      category = excluded.category,
+      brand = excluded.brand,
+      last_update = excluded.last_update,
+      name_lower = excluded.name_lower
+  `,
+  args: [
+    code, 
+    product.name, 
+    realPrice,
+    basePrice,
+    packPrice,
+    monthly_payment,
+    no_overpayment_max_months,
+    product.link || '', 
+    category, 
+    brand, 
+    now.toISOString().slice(0, 19).replace('T', ' '),
+    nameLower
+  ]
+});
 
   } catch (error) {
     console.error(`❌ Критическая ошибка при сохранении товара ${code}:`, error.message);
