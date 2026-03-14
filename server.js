@@ -739,40 +739,46 @@ app.post('/api/products/add-full', authenticateToken, async (req, res) => {
     // Сохраняем информацию о товаре
     const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
     
-    await db.run({
-      sql: `
-        INSERT INTO products_info (
-          code, name, last_price, base_price, packPrice,
-          monthly_payment, no_overpayment_max_months,
-          link, category, brand, last_update
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(code) DO UPDATE SET
-          name = excluded.name,
-          last_price = excluded.last_price,
-          base_price = excluded.base_price,
-          packPrice = excluded.packPrice,
-          monthly_payment = excluded.monthly_payment,
-          no_overpayment_max_months = excluded.no_overpayment_max_months,
-          link = excluded.link,
-          category = excluded.category,
-          brand = excluded.brand,
-          last_update = excluded.last_update
-      `,
-      args: [
-        code, 
-        name, 
-        price,
-        base_price,
-        packPrice,
-        monthly_payment,
-        no_overpayment_max_months,
-        link || '', 
-        category, 
-        brand, 
-        now
-      ]
-    });
+// Создаем версию в нижнем регистре
+const nameLower = name ? name.toLowerCase() : '';
+
+await db.run({
+  sql: `
+    INSERT INTO products_info (
+      code, name, last_price, base_price, packPrice,
+      monthly_payment, no_overpayment_max_months,
+      link, category, brand, last_update,
+      name_lower
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(code) DO UPDATE SET
+      name = excluded.name,
+      last_price = excluded.last_price,
+      base_price = excluded.base_price,
+      packPrice = excluded.packPrice,
+      monthly_payment = excluded.monthly_payment,
+      no_overpayment_max_months = excluded.no_overpayment_max_months,
+      link = excluded.link,
+      category = excluded.category,
+      brand = excluded.brand,
+      last_update = excluded.last_update,
+      name_lower = excluded.name_lower
+  `,
+  args: [
+    code, 
+    name, 
+    price,
+    base_price,
+    packPrice,
+    monthly_payment,
+    no_overpayment_max_months,
+    link || '', 
+    category, 
+    brand, 
+    now,
+    nameLower  // 👈 новое значение
+  ]
+});
 
     // Создаем первую запись в истории цен
     await db.run({
