@@ -1290,6 +1290,106 @@ app.get('/api/products/check/:code', authenticateToken, async (req, res) => {
   }
 });
 
+// ==================== КАТАЛОГ (товары НЕ в избранном) С ПАГИНАЦИЕЙ ====================
+app.get('/api/products/catalog', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const limit = parseInt(req.query.limit) || 24;
+    const offset = parseInt(req.query.offset) || 0;
+    const categories = req.query.categories ? 
+      (Array.isArray(req.query.categories) ? req.query.categories : [req.query.categories]) : [];
+    const brands = req.query.brands ? 
+      (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
+    const search = req.query.search;
+
+    console.log(`📦 Запрос каталога: userId=${userId}, limit=${limit}, offset=${offset}, categories=${categories}, brands=${brands}, search=${search}`);
+
+    // Строим WHERE условие
+    let whereConditions = [];
+    let args = [];
+
+    // Исключаем товары из избранного пользователя
+    whereConditions.push(`code NOT IN (SELECT product_code FROM user_shelf WHERE user_id = ?)`);
+    args.push(userId);
+
+    if (categories.length > 0) {
+      const placeholders = categories.map(() => '?').join(',');
+      whereConditions.push(`category IN (${placeholders})`);
+      args = [...args, ...categories];
+    }
+
+    if (brands.length > 0) {
+      const placeholders = brands.map(() => '?').join(',');
+      whereConditions.push(`brand IN (${placeholders})`);
+      args = [...args, ...brands];
+    }
+
+    if (search && search !== '') {
+      const searchLower = search.toLowerCase();
+      whereConditions.push(`(name_lower LIKE ? OR code LIKE ?)`);
+      args.push(`%${searchLower}%`, `%${search}%`);
+    }
+
+    const whereClause = 'WHERE ' + whereConditions.join(' AND ');
+
+    // Получаем товары с пагинацией
+    const products = await db.execute({
+      sql: `
+        SELECT * FROM products_info 
+        ${whereClause}
+        ORDER BY last_update DESC 
+        LIMIT ? OFFSET ?
+      `,
+      args: [...args, limit, offset]
+    });
+
+    // Получаем общее количество (для hasMore)
+    const totalCount = await db.execute({
+      sql: `SELECT COUNT(*) as count FROM products_info ${whereClause}`,
+      args: args
+    });
+
+    // Если есть товары, получаем историю цен
+    if (products.rows.length > 0) {
+      const codes = products.rows.map(p => `'${p.code}'`).join(',');
+      
+      const history = await db.execute(`
+        SELECT product_code, price, updated_at
+        FROM price_history
+        WHERE product_code IN (${codes})
+        ORDER BY product_code, updated_at ASC
+      `);
+
+      const historyByProduct = {};
+      history.rows.forEach(row => {
+        if (!historyByProduct[row.product_code]) {
+          historyByProduct[row.product_code] = [];
+        }
+        historyByProduct[row.product_code].push({
+          date: row.updated_at,
+          price: row.price
+        });
+      });
+
+      products.rows = products.rows.map(p => ({
+        ...p,
+        priceHistory: historyByProduct[p.code] || []
+      }));
+    }
+
+    console.log(`✅ Каталог: ${products.rows.length} товаров, всего: ${totalCount.rows[0].count}`);
+
+    res.json({
+      products: products.rows,
+      total: totalCount.rows[0].count,
+      hasMore: offset + limit < totalCount.rows[0].count
+    });
+
+  } catch (err) {
+    console.error('❌ Ошибка в /api/products/catalog:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 // ==================== ПАГИНИРОВАННЫЙ ЭНДПОИНТ ДЛЯ ПОЛКИ С МУЛЬТИФИЛЬТРАМИ ====================
 app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
   try {
