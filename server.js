@@ -1173,27 +1173,40 @@ app.post('/api/user/shelf/:code', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     const { code } = req.params;
     
-    const productExists = await db.execute({
+    console.log(`📝 Запрос на добавление: userId=${userId}, code=${code}`);
+    
+    // Проверяем, существует ли пользователь
+    const userCheck = await db.execute({
+      sql: 'SELECT id FROM users WHERE id = ?',
+      args: [userId]
+    });
+    console.log('👤 Пользователь найден:', userCheck.rows.length > 0);
+    
+    // Проверяем, существует ли товар
+    const productCheck = await db.execute({
       sql: 'SELECT code FROM products_info WHERE code = ?',
       args: [code]
     });
+    console.log('📦 Товар найден:', productCheck.rows.length > 0);
     
-    if (productExists.rows.length === 0) {
-      return res.status(404).json({ error: 'Товар не найден в базе' });
-    }
-    
-    await db.execute({
+    // Вставка
+    const result = await db.execute({
       sql: 'INSERT OR IGNORE INTO user_shelf (user_id, product_code) VALUES (?, ?)',
       args: [userId, code]
     });
     
-    res.json({ 
-      success: true, 
-      message: 'Товар добавлен на полку' 
-    });
+    console.log('💾 Результат вставки:', result);
     
+    // Проверяем, добавилось ли
+    const check = await db.execute({
+      sql: 'SELECT * FROM user_shelf WHERE user_id = ? AND product_code = ?',
+      args: [userId, code]
+    });
+    console.log('🔍 Проверка после вставки:', check.rows);
+    
+    res.json({ success: true, message: 'Товар добавлен на полку' });
   } catch (err) {
-    console.error('Ошибка добавления на полку:', err);
+    console.error('❌ Ошибка добавления на полку:', err);
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
