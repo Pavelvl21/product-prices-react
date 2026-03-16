@@ -28,6 +28,14 @@ async function saveProductData(product, timestamp) {
   }
   const brand = product.producerName || 'Без бренда';
 
+  // 📊 Статистика по этой операции
+  const stats = {
+    priceChanged: false,
+    priceInserted: false,
+    productUpdated: false,
+    categoryUpdated: false
+  };
+
   try {
     const lastRecord = await db.execute({
       sql: `SELECT price, updated_at FROM price_history 
@@ -62,92 +70,81 @@ async function saveProductData(product, timestamp) {
     
     const isMonitored = monitoringCheck.rows.length > 0;
 
-    if (todayRecord.rows.length === 0) {
-      // Первая запись за сегодня
-      if (lastPrice !== undefined && Math.abs(realPrice - lastPrice) > 0.01) {
-        await insertPriceRecord(code, product.name, realPrice, now);
-        
-        if (isMonitored && lastPrice !== undefined) {
-          const notification = formatPriceChangeNotification(
-            productWithPrices, 
-            lastPrice, 
-            realPrice
-          );
-          
-  await notifyProductSubscribers(
-    code,                         // productCode
-    productWithPrices,            // productData (объект с name, basePrice, packPrice и т.д.)
-    lastPrice,                    // oldPrice
-    realPrice,                    // newPrice
-    formatPriceChangeNotification  // formatFunction
-  );
-        }
-      } else {
-        await insertPriceRecord(code, product.name, realPrice, now);
-      }
+    // ☑️ Проверяем, изменилась ли цена
+    const priceChanged = lastPrice !== undefined && Math.abs(realPrice - lastPrice) > 0.01;
+    stats.priceChanged = priceChanged;
+
+    // ☑️ Решаем, нужно ли вставлять в историю
+    const shouldInsertPrice = priceChanged || lastPrice === undefined;
+    
+    if (shouldInsertPrice) {
+      await insertPriceRecord(code, product.name, realPrice, now);
+      stats.priceInserted = true;
       
-    } else {
-      if (lastPrice !== undefined && Math.abs(realPrice - lastPrice) > 0.01) {
-        await insertPriceRecord(code, product.name, realPrice, now);
+      if (priceChanged && isMonitored) {
+        const notification = formatPriceChangeNotification(
+          productWithPrices, 
+          lastPrice, 
+          realPrice
+        );
         
-        if (isMonitored) {
-          const notification = formatPriceChangeNotification(
-            productWithPrices, 
-            lastPrice, 
-            realPrice
-          );
-          
-  await notifyProductSubscribers(
-    code,                         // productCode
-    productWithPrices,            // productData (объект с name, basePrice, packPrice и т.д.)
-    lastPrice,                    // oldPrice
-    realPrice,                    // newPrice
-    formatPriceChangeNotification  // formatFunction
-  );
-        }
+        await notifyProductSubscribers(
+          code,
+          productWithPrices,
+          lastPrice,
+          realPrice,
+          formatPriceChangeNotification
+        );
       }
     }
 
-    // Сохраняем в products_info
-const nameLower = product.name ? product.name.toLowerCase() : '';
+    // Всегда обновляем products_info
+    const nameLower = product.name ? product.name.toLowerCase() : '';
+    
+    await db.execute({
+      sql: `
+        INSERT INTO products_info (
+          code, name, last_price, base_price, packPrice,
+          monthly_payment, no_overpayment_max_months,
+          link, category, brand, last_update,
+          name_lower
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(code) DO UPDATE SET
+          name = excluded.name,
+          last_price = excluded.last_price,
+          base_price = excluded.base_price,
+          packPrice = excluded.packPrice,
+          monthly_payment = excluded.monthly_payment,
+          no_overpayment_max_months = excluded.no_overpayment_max_months,
+          link = excluded.link,
+          category = excluded.category,
+          brand = excluded.brand,
+          last_update = excluded.last_update,
+          name_lower = excluded.name_lower
+      `,
+      args: [
+        code, 
+        product.name, 
+        realPrice,
+        basePrice,
+        packPrice,
+        monthly_payment,
+        no_overpayment_max_months,
+        product.link || '', 
+        category, 
+        brand, 
+        now.toISOString().slice(0, 19).replace('T', ' '),
+        nameLower
+      ]
+    });
+    stats.productUpdated = true;
 
-await db.execute({
-  sql: `
-    INSERT INTO products_info (
-      code, name, last_price, base_price, packPrice,
-      monthly_payment, no_overpayment_max_months,
-      link, category, brand, last_update,
-      name_lower
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(code) DO UPDATE SET
-      name = excluded.name,
-      last_price = excluded.last_price,
-      base_price = excluded.base_price,
-      packPrice = excluded.packPrice,
-      monthly_payment = excluded.monthly_payment,
-      no_overpayment_max_months = excluded.no_overpayment_max_months,
-      link = excluded.link,
-      category = excluded.category,
-      brand = excluded.brand,
-      last_update = excluded.last_update,
-      name_lower = excluded.name_lower
-  `,
-  args: [
-    code, 
-    product.name, 
-    realPrice,
-    basePrice,
-    packPrice,
-    monthly_payment,
-    no_overpayment_max_months,
-    product.link || '', 
-    category, 
-    brand, 
-    now.toISOString().slice(0, 19).replace('T', ' '),
-    nameLower
-  ]
-});
+    // Обновляем связи категорий
+    await updateCategoryBrandRelations(category, brand);
+    stats.categoryUpdated = true;
+
+    return stats;
 
   } catch (error) {
     console.error(`❌ Критическая ошибка при сохранении товара ${code}:`, error.message);
