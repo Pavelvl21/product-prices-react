@@ -218,6 +218,14 @@ export async function updateAllPrices() {
   const startTime = Date.now();
   console.log(`\n🚀 Запуск планового обновления цен: ${new Date().toLocaleString('ru-RU')}`);
 
+  // 📊 СЧЁТЧИКИ ДЛЯ ДИАГНОСТИКИ
+  let totalProcessed = 0;
+  let totalErrors = 0;
+  let totalPriceChanges = 0; // сколько раз цена реально изменилась
+  let totalPriceInserts = 0; // сколько INSERT в price_history сделано
+  let totalProductUpdates = 0; // сколько UPDATE products_info
+  let totalCategoryUpdates = 0; // сколько операций с category_brand_relations
+
   try {
     const codesResult = await db.execute('SELECT code FROM product_codes');
     const allCodes = codesResult.rows.map(row => row.code);
@@ -227,6 +235,8 @@ export async function updateAllPrices() {
       return;
     }
 
+    console.log(`📦 Всего товаров для обновления: ${allCodes.length}`);
+
     const BATCH_SIZE = 100;
     const CONCURRENT_LIMIT = 2;
     
@@ -235,27 +245,23 @@ export async function updateAllPrices() {
       batches.push(allCodes.slice(i, i + BATCH_SIZE));
     }
 
-    let processedBatches = 0;
-    let totalProcessed = 0;
-    let totalChanged = 0;
-    let totalNewRecords = 0;
-    let totalErrors = 0;
-
     const processBatch = async (batch, batchIndex) => {
-      const batchNum = batchIndex + 1;
       const batchStartTime = new Date();
       
       let batchProcessed = 0;
-      let batchChanged = 0;
-      let batchNewRecords = 0;
       let batchErrors = 0;
+      let batchPriceChanges = 0;
+      let batchPriceInserts = 0;
+      let batchProductUpdates = 0;
+      let batchCategoryUpdates = 0;
       
-      let requestDelay = 100; // стартовая задержка 100ms
+      let requestDelay = 100;
 
       for (const code of batch) {
         try {
           batchProcessed++;
           
+          // Получаем данные с 21vek
           const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
             headers: {
               "accept": "application/json",
@@ -311,32 +317,48 @@ export async function updateAllPrices() {
             // Игнорируем ошибки рассрочки
           }
           
-          await saveProductData(product, batchStartTime);
+          // 📊 Сохраняем и собираем статистику
+          const stats = await saveProductData(product, batchStartTime);
           
-          // Умная задержка между запросами
+          // Собираем статистику
+          batchPriceChanges += stats.priceChanged ? 1 : 0;
+          batchPriceInserts += stats.priceInserted ? 1 : 0;
+          batchProductUpdates += stats.productUpdated ? 1 : 0;
+          batchCategoryUpdates += stats.categoryUpdated ? 1 : 0;
+          
+          // Умная задержка
           await new Promise(resolve => setTimeout(resolve, requestDelay));
           
-          // Плавно возвращаем задержку к базовой при успехах
           if (requestDelay > 100) {
             requestDelay = Math.max(requestDelay - 5, 100);
           }
           
         } catch (error) {
           batchErrors++;
-          // При ошибке увеличиваем задержку
           requestDelay = Math.min(requestDelay + 20, 500);
           await new Promise(resolve => setTimeout(resolve, requestDelay));
         }
       }
 
+      console.log(`\n📊 Батч ${batchIndex + 1} завершен:`);
+      console.log(`   - Обработано: ${batchProcessed} товаров`);
+      console.log(`   - Ошибок: ${batchErrors}`);
+      console.log(`   - Цена изменилась у: ${batchPriceChanges} товаров`);
+      console.log(`   - Сделано INSERT в price_history: ${batchPriceInserts}`);
+      console.log(`   - Сделано UPDATE products_info: ${batchProductUpdates}`);
+      console.log(`   - Сделано операций с category_brand_relations: ${batchCategoryUpdates}`);
+
       return { 
         processed: batchProcessed, 
-        changed: 0, // Не отслеживаем
-        newRecords: 0,
-        errors: batchErrors 
+        errors: batchErrors,
+        priceChanges: batchPriceChanges,
+        priceInserts: batchPriceInserts,
+        productUpdates: batchProductUpdates,
+        categoryUpdates: batchCategoryUpdates
       };
     };
 
+    // Запускаем батчи параллельно
     for (let i = 0; i < batches.length; i += CONCURRENT_LIMIT) {
       const currentBatches = batches.slice(i, i + CONCURRENT_LIMIT);
       
@@ -345,23 +367,33 @@ export async function updateAllPrices() {
       );
       
       results.forEach(result => {
-        totalProcessed += result.processed || 0;
-        totalErrors += result.errors || 0;
+        totalProcessed += result.processed;
+        totalErrors += result.errors;
+        totalPriceChanges += result.priceChanges;
+        totalPriceInserts += result.priceInserts;
+        totalProductUpdates += result.productUpdates;
+        totalCategoryUpdates += result.categoryUpdates;
       });
-      
-      processedBatches += currentBatches.length;
     }
 
     const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
     
-    console.log(`✅ Плановое обновление завершено за ${totalTime} сек`);
-    console.log(`📊 Обработано: ${totalProcessed} товаров, ошибок: ${totalErrors}`);
+    console.log(`\n✅ ПЛАНОВОЕ ОБНОВЛЕНИЕ ЗАВЕРШЕНО`);
+    console.log(`⏱️ Время выполнения: ${totalTime} сек`);
+    console.log(`📊 Обработано товаров: ${totalProcessed}`);
+    console.log(`❌ Ошибок: ${totalErrors}`);
+    console.log(`\n📈 ДЕТАЛЬНАЯ СТАТИСТИКА ЗАПИСЕЙ:`);
+    console.log(`   - Цена изменилась у: ${totalPriceChanges} товаров`);
+    console.log(`   - INSERT в price_history: ${totalPriceInserts}`);
+    console.log(`   - UPDATE products_info: ${totalProductUpdates}`);
+    console.log(`   - Операции с category_brand_relations: ${totalCategoryUpdates}`);
+    console.log(`   - ВСЕГО ОПЕРАЦИЙ ЗАПИСИ: ${totalPriceInserts + totalProductUpdates + totalCategoryUpdates}`);
 
   } catch (error) {
     console.error('\n❌ КРИТИЧЕСКАЯ ОШИБКА ПРИ ОБНОВЛЕНИИ ЦЕН:', error.message);
     
     await sendTelegramMessage(`
-⚠️ <b>Критическая ошибка при массовом обновлении</b>
+⚠️ Критическая ошибка при массовом обновлении
 
 ${error.message}
 
