@@ -15,7 +15,6 @@ const db = createClient({
 
 export async function initTables() {
   try {
-    // Существующие таблицы
     await db.execute(`
       CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,7 +82,6 @@ export async function initTables() {
       )
     `);
 
-    // ========== НОВАЯ ТАБЛИЦА ДЛЯ СВЯЗЕЙ КАТЕГОРИЙ И БРЕНДОВ ==========
     await db.execute(`
       CREATE TABLE IF NOT EXISTS category_brand_relations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,7 +93,6 @@ export async function initTables() {
       )
     `);
 
-    // Индексы для ускорения фильтрации
     await db.execute(`
       CREATE INDEX IF NOT EXISTS idx_category_brand_category 
       ON category_brand_relations(category)
@@ -111,43 +108,7 @@ export async function initTables() {
   }
 }
 
-// Функция для обновления связей категория-бренд
-export async function updateCategoryBrandRelations(category, brand) {
-  if (!category || !brand || category === 'Товары' || brand === 'Без бренда') {
-    return; // Игнорируем неинформативные значения
-  }
-
-  try {
-    // Проверяем, существует ли уже такая связь
-    const existing = await db.execute({
-      sql: 'SELECT id, products_count FROM category_brand_relations WHERE category = ? AND brand = ?',
-      args: [category, brand]
-    });
-
-    if (existing.rows.length > 0) {
-      // Обновляем счётчик
-      await db.execute({
-        sql: `
-          UPDATE category_brand_relations 
-          SET products_count = products_count + 1, last_updated = CURRENT_TIMESTAMP
-          WHERE category = ? AND brand = ?
-        `,
-        args: [category, brand]
-      });
-    } else {
-      // Создаём новую связь
-      await db.execute({
-        sql: `
-          INSERT INTO category_brand_relations (category, brand, products_count)
-          VALUES (?, ?, 1)
-        `,
-        args: [category, brand]
-      });
-    }
-    // console.log(`✅ Связь обновлена: ${category} - ${brand}`);
-  } catch (err) {
-    console.error('❌ Ошибка обновления связей:', err);
-  }
-}
+// ⚠️ ВАЖНО: УДАЛИТЕ функцию updateCategoryBrandRelations отсюда!
+// Она теперь в отдельном файле categoryRelations.js
 
 export default db;
