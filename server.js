@@ -1260,7 +1260,7 @@ app.get('/api/products/catalog', authenticateToken, async (req, res) => {
       args: [...args, limit, offset]
     });
 
-    // Получаем общее количество (для hasMore)
+    // Получаем общее количество
     const totalCount = await db.execute({
       sql: `SELECT COUNT(*) as count FROM products_info ${whereClause}`,
       args: args
@@ -1308,6 +1308,8 @@ app.get('/api/products/catalog', authenticateToken, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
 
 /**
  * Проверить статус нескольких товаров для текущего пользователя
@@ -1698,6 +1700,9 @@ process.on('unhandledRejection', (err) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Сервер запущен на порту ${PORT}`);
 });
+
+
+// ==================== ВСЕ ТОВАРЫ С ПАГИНАЦИЕЙ И СОРТИРОВКОЙ ====================
 app.get('/api/products/paginated', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1708,11 +1713,13 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
     const brands = req.query.brands ? 
       (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
     const search = req.query.search;
-    const sort = req.query.sort || 'price_desc';
+    const sort = req.query.sort || 'price_desc'; // параметр сортировки
+
+    console.log(`📊 Запрос всех товаров: userId=${userId}, sort=${sort}, limit=${limit}, offset=${offset}`);
 
     // Строим WHERE условие
     let whereConditions = [];
-    let queryParams = [userId];
+    let queryParams = [];
 
     if (categories.length > 0) {
       const placeholders = categories.map(() => '?').join(',');
@@ -1732,14 +1739,15 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
 
     const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
 
-    // Определяем сортировку
+    // Определяем сортировку по цене (с CAST для правильной сортировки чисел)
     let orderClause = '';
     if (sort === 'price_asc') {
       orderClause = 'ORDER BY CAST(p.last_price AS REAL) ASC, p.code';
     } else {
-      orderClause = 'ORDER BY CAST(p.last_price AS REAL) DESC, p.code';
+      orderClause = 'ORDER BY CAST(p.last_price AS REAL) DESC, p.code'; // по умолчанию сначала дорогие
     }
 
+    // Основной запрос с LEFT JOIN для флага inMonitoring
     const productsQuery = `
       SELECT 
         p.*,
@@ -1751,6 +1759,7 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
       LIMIT ? OFFSET ?
     `;
 
+    // Параметры: userId, фильтры, limit, offset
     const productsParams = [userId, ...queryParams, limit, offset];
     
     const products = await db.execute({
@@ -1758,7 +1767,66 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
       args: productsParams
     });
 
-    // ... остальной код без изменений
+    // Запрос для общего количества
+    let countQuery = `SELECT COUNT(*) as count FROM products_info p`;
+    let countParams = [];
+
+    if (whereConditions.length > 0) {
+      countQuery += ' WHERE ' + whereConditions.join(' AND ');
+      countParams = queryParams; // те же параметры, что и для фильтров
+    }
+
+    const totalCount = await db.execute({
+      sql: countQuery,
+      args: countParams
+    });
+
+    // Если товаров нет, возвращаем пустой результат
+    if (products.rows.length === 0) {
+      return res.json({
+        products: [],
+        total: totalCount.rows[0].count,
+        hasMore: false
+      });
+    }
+
+    // Получаем историю цен
+    const codes = products.rows.map(p => `'${p.code}'`).join(',');
+    const history = await db.execute(`
+      SELECT product_code, price, updated_at
+      FROM price_history
+      WHERE product_code IN (${codes})
+      ORDER BY product_code, updated_at ASC
+    `);
+
+    // Группируем историю
+    const historyByProduct = {};
+    history.rows.forEach(row => {
+      if (!historyByProduct[row.product_code]) {
+        historyByProduct[row.product_code] = [];
+      }
+      historyByProduct[row.product_code].push({
+        date: row.updated_at,
+        price: row.price
+      });
+    });
+
+    // Формируем результат
+    const result = products.rows.map(p => ({
+      code: p.code,
+      name: p.name,
+      link: p.link,
+      category: p.category || 'Товары',
+      brand: p.brand || 'Без бренда',
+      base_price: p.base_price,
+      packPrice: p.packPrice,
+      monthly_payment: p.monthly_payment,
+      no_overpayment_max_months: p.no_overpayment_max_months,
+      currentPrice: p.last_price ? parseFloat(p.last_price) : null,
+      lastUpdate: p.last_update,
+      priceHistory: historyByProduct[p.code] || [],
+      inMonitoring: p.inMonitoring === 1
+    }));
 
     res.json({
       products: result,
@@ -1768,11 +1836,16 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
 
   } catch (err) {
     console.error('❌ Ошибка в /api/products/paginated:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ 
+      error: 'Ошибка сервера',
+      details: err.message 
+    });
   }
 });
 
-// ==================== ПАГИНИРОВАННЫЙ ЭНДПОИНТ ДЛЯ ИЗБРАННОГО ====================
+
+
+// ==================== ИЗБРАННОЕ С ПАГИНАЦИЕЙ И СОРТИРОВКОЙ ====================
 app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1785,15 +1858,9 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
     const search = req.query.search;
     const sort = req.query.sort || 'price_desc';
 
-    // Определяем сортировку (только по цене, без favorite)
-    let orderClause = '';
-    if (sort === 'price_asc') {
-      orderClause = 'ORDER BY CAST(p.last_price AS REAL) ASC, p.code';
-    } else {
-      orderClause = 'ORDER BY CAST(p.last_price AS REAL) DESC, p.code'; // по умолчанию
-    }
+    console.log(`📦 Запрос избранного: userId=${userId}, sort=${sort}`);
 
-    // Строим WHERE условие с параметрами (БЕЗ конкатенации!)
+    // Строим WHERE условие с параметрами
     let whereConditions = [`us.user_id = ?`];
     let queryParams = [userId];
 
@@ -1815,7 +1882,15 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
 
     const whereClause = 'WHERE ' + whereConditions.join(' AND ');
 
-    // Основной запрос с пагинацией
+    // Определяем сортировку по цене
+    let orderClause = '';
+    if (sort === 'price_asc') {
+      orderClause = 'ORDER BY CAST(p.last_price AS REAL) ASC, p.code';
+    } else {
+      orderClause = 'ORDER BY CAST(p.last_price AS REAL) DESC, p.code';
+    }
+
+    // Основной запрос
     const productsQuery = `
       SELECT 
         p.code,
