@@ -1209,7 +1209,7 @@ app.get('/api/products/catalog', authenticateToken, async (req, res) => {
     const brands = req.query.brands ? 
       (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
     const search = req.query.search;
-    const sort = req.query.sort || 'price_desc';
+    const sort = req.query.sort || 'default';
 
     console.log(`📦 Запрос каталога (не в избранном): userId=${userId}, sort=${sort}`);
 
@@ -1241,12 +1241,18 @@ app.get('/api/products/catalog', authenticateToken, async (req, res) => {
 
     const whereClause = 'WHERE ' + whereConditions.join(' AND ');
 
-    // Определяем сортировку по цене
+    // Определяем сортировку
     let orderClause = '';
     if (sort === 'price_asc') {
       orderClause = 'ORDER BY CAST(last_price AS REAL) ASC, code';
-    } else {
+    } else if (sort === 'price_desc') {
       orderClause = 'ORDER BY CAST(last_price AS REAL) DESC, code';
+    } else if (sort === 'name_asc') {
+      orderClause = 'ORDER BY name_lower ASC, code';
+    } else if (sort === 'name_desc') {
+      orderClause = 'ORDER BY name_lower DESC, code';
+    } else {
+      orderClause = 'ORDER BY last_update DESC, code';
     }
 
     // Получаем товары с пагинацией
@@ -1712,7 +1718,7 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
     const brands = req.query.brands ? 
       (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
     const search = req.query.search;
-    const sort = req.query.sort || 'price_desc'; // параметр сортировки
+    const sort = req.query.sort || 'default'; // параметр сортировки (по умолчанию без сортировки)
 
     console.log(`📊 Запрос всех товаров: userId=${userId}, sort=${sort}, limit=${limit}, offset=${offset}`);
 
@@ -1738,12 +1744,19 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
 
     const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
 
-    // Определяем сортировку по цене (с CAST для правильной сортировки чисел)
+    // Определяем сортировку
     let orderClause = '';
     if (sort === 'price_asc') {
       orderClause = 'ORDER BY CAST(p.last_price AS REAL) ASC, p.code';
+    } else if (sort === 'price_desc') {
+      orderClause = 'ORDER BY CAST(p.last_price AS REAL) DESC, p.code';
+    } else if (sort === 'name_asc') {
+      orderClause = 'ORDER BY p.name_lower ASC, p.code';
+    } else if (sort === 'name_desc') {
+      orderClause = 'ORDER BY p.name_lower DESC, p.code';
     } else {
-      orderClause = 'ORDER BY CAST(p.last_price AS REAL) DESC, p.code'; // по умолчанию сначала дорогие
+      // По умолчанию — без сортировки (как пришло с сервера)
+      orderClause = 'ORDER BY p.last_update DESC, p.code';
     }
 
     // Основной запрос с LEFT JOIN для флага inMonitoring
@@ -1772,7 +1785,7 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
 
     if (whereConditions.length > 0) {
       countQuery += ' WHERE ' + whereConditions.join(' AND ');
-      countParams = queryParams; // те же параметры, что и для фильтров
+      countParams = queryParams;
     }
 
     const totalCount = await db.execute({
@@ -1843,7 +1856,6 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
 });
 
 
-
 // ==================== ИЗБРАННОЕ С ПАГИНАЦИЕЙ И СОРТИРОВКОЙ ====================
 app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
   try {
@@ -1855,7 +1867,7 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
     const brands = req.query.brands ? 
       (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
     const search = req.query.search;
-    const sort = req.query.sort || 'price_desc';
+    const sort = req.query.sort || 'default';
 
     console.log(`📦 Запрос избранного: userId=${userId}, sort=${sort}`);
 
@@ -1881,12 +1893,18 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
 
     const whereClause = 'WHERE ' + whereConditions.join(' AND ');
 
-    // Определяем сортировку по цене
+    // Определяем сортировку
     let orderClause = '';
     if (sort === 'price_asc') {
       orderClause = 'ORDER BY CAST(p.last_price AS REAL) ASC, p.code';
-    } else {
+    } else if (sort === 'price_desc') {
       orderClause = 'ORDER BY CAST(p.last_price AS REAL) DESC, p.code';
+    } else if (sort === 'name_asc') {
+      orderClause = 'ORDER BY p.name_lower ASC, p.code';
+    } else if (sort === 'name_desc') {
+      orderClause = 'ORDER BY p.name_lower DESC, p.code';
+    } else {
+      orderClause = 'ORDER BY us.added_at DESC, p.code';
     }
 
     // Основной запрос
