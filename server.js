@@ -1538,7 +1538,6 @@ app.get('/api/external/search', authenticateToken, async (req, res) => {
   }
 });
 // ==================== ПОЛУЧЕНИЕ ОПЦИЙ ФИЛЬТРОВ ====================
-// Это в server.js
 app.get('/api/filter-options', authenticateToken, async (req, res) => {
   try {
     const categories = req.query.categories ? 
