@@ -1,4 +1,4 @@
-// update_name_lower.js
+// update_name_lower.js ТОЛЬКО ДЛЯ РАЗОВОГО ИСПОЛЬЗОВАНИЯ
 import db from './database.js';
 
 async function updateNameLower() {
