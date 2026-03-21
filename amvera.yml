@@ -5,14 +5,7 @@ meta:
     version: "18"
 build:
   skip: false
-  additionalCommands: null
-  artifacts:
-    "*": /
 run:
   scriptName: server.js
-  scriptArguments: null
-  nodeArguments: null
-  command: null
-  persistenceMount: /data
-  containerPort: 80
+  containerPort: 3000
   servicePort: 80

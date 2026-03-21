@@ -21,6 +21,7 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const MY_SECRET_KEY = process.env.SECRET_KEY;
 const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
+
 if (!JWT_SECRET) {
   console.error('❌ JWT_SECRET не задан');
   process.exit(1);
@@ -30,6 +31,10 @@ if (!MY_SECRET_KEY) {
   console.error('❌ SECRET_KEY не задан');
   process.exit(1);
 }
+
+console.log('🚀 1. Начало загрузки');
+console.log('📂 __dirname:', __dirname);
+console.log('🔧 PORT:', process.env.PORT);
 
 await initTables();
 
@@ -67,7 +72,7 @@ const authLimiter = rateLimit({
 app.use('/api/', apiLimiter);
 
 app.use(express.json({ limit: '1mb' }));
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'public')));
 
 app.use((req, res, next) => {
   // Разрешаем все адреса GitHub Codespaces
