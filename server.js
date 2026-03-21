@@ -1198,7 +1198,7 @@ app.get('/api/products/check/:code', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== КАТАЛОГ (товары НЕ в избранном) С ПАГИНАЦИЕЙ, СОРТИРОВКОЙ И ФИЛЬТРОМ ПО ДАТАМ ====================
+// ==================== КАТАЛОГ (товары НЕ в избранном) С ПАГИНАЦИЕЙ ====================
 app.get('/api/products/catalog', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1209,11 +1209,9 @@ app.get('/api/products/catalog', authenticateToken, async (req, res) => {
     const brands = req.query.brands ? 
       (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
     const search = req.query.search;
-    const sort = req.query.sort || 'price_desc';
-    const dateFrom = req.query.dateFrom;
-    const dateTo = req.query.dateTo;
+    const sort = req.query.sort || 'default';
 
-    console.log(`📦 Запрос каталога (не в избранном): userId=${userId}, sort=${sort}, dateFrom=${dateFrom}, dateTo=${dateTo}`);
+    console.log(`📦 Запрос каталога (не в избранном): userId=${userId}, sort=${sort}`);
 
     // Строим WHERE условие
     let whereConditions = [];
@@ -1223,51 +1221,18 @@ app.get('/api/products/catalog', authenticateToken, async (req, res) => {
     whereConditions.push(`code NOT IN (SELECT product_code FROM user_shelf WHERE user_id = ?)`);
     args.push(userId);
 
-    // Фильтр по датам
-    if (dateFrom && dateTo) {
-      whereConditions.push(`
-        code IN (
-          SELECT DISTINCT product_code 
-          FROM price_history 
-          WHERE DATE(updated_at) BETWEEN ? AND ?
-        )
-      `);
-      args.push(dateFrom, dateTo);
-    } else if (dateFrom) {
-      whereConditions.push(`
-        code IN (
-          SELECT DISTINCT product_code 
-          FROM price_history 
-          WHERE DATE(updated_at) >= ?
-        )
-      `);
-      args.push(dateFrom);
-    } else if (dateTo) {
-      whereConditions.push(`
-        code IN (
-          SELECT DISTINCT product_code 
-          FROM price_history 
-          WHERE DATE(updated_at) <= ?
-        )
-      `);
-      args.push(dateTo);
-    }
-
-    // Фильтр по категориям
     if (categories.length > 0) {
       const placeholders = categories.map(() => '?').join(',');
       whereConditions.push(`category IN (${placeholders})`);
       args = [...args, ...categories];
     }
 
-    // Фильтр по брендам
     if (brands.length > 0) {
       const placeholders = brands.map(() => '?').join(',');
       whereConditions.push(`brand IN (${placeholders})`);
       args = [...args, ...brands];
     }
 
-    // Поиск
     if (search && search !== '') {
       const searchLower = search.toLowerCase();
       whereConditions.push(`(name_lower LIKE ? OR code LIKE ?)`);
@@ -1301,20 +1266,10 @@ app.get('/api/products/catalog', authenticateToken, async (req, res) => {
       args: [...args, limit, offset]
     });
 
-    // Запрос для общего количества
-    let countQuery = `SELECT COUNT(*) as count FROM products_info`;
-    let countArgs = [];
-
-    // Условия для подсчёта
-    let countConditions = [...whereConditions];
-    if (countConditions.length > 0) {
-      countQuery += ' WHERE ' + countConditions.join(' AND ');
-      countArgs = [...args.slice(0, -2)]; // убираем limit и offset
-    }
-
+    // Получаем общее количество
     const totalCount = await db.execute({
-      sql: countQuery,
-      args: countArgs
+      sql: `SELECT COUNT(*) as count FROM products_info ${whereClause}`,
+      args: args
     });
 
     // Если есть товары, получаем историю цен
@@ -1754,7 +1709,8 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Сервер запущен на порту ${PORT}`);
 });
 
-// ==================== ВСЕ ТОВАРЫ С ПАГИНАЦИЕЙ, СОРТИРОВКОЙ И ФИЛЬТРОМ ПО ДАТАМ ====================
+
+// ==================== ВСЕ ТОВАРЫ С ПАГИНАЦИЕЙ И СОРТИРОВКОЙ ====================
 app.get('/api/products/paginated', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1765,61 +1721,24 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
     const brands = req.query.brands ? 
       (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
     const search = req.query.search;
-    const sort = req.query.sort || 'price_desc';
-    const dateFrom = req.query.dateFrom;
-    const dateTo = req.query.dateTo;
+    const sort = req.query.sort || 'default'; // параметр сортировки (по умолчанию без сортировки)
 
-    console.log(`📊 Запрос всех товаров: userId=${userId}, sort=${sort}, dateFrom=${dateFrom}, dateTo=${dateTo}`);
+    console.log(`📊 Запрос всех товаров: userId=${userId}, sort=${sort}, limit=${limit}, offset=${offset}`);
 
     // Строим WHERE условие
     let whereConditions = [];
-    let queryParams = [userId];
+    let queryParams = [];
 
-    // Фильтр по датам (исправлено для SQLite)
-    if (dateFrom && dateTo) {
-      whereConditions.push(`
-        p.code IN (
-          SELECT DISTINCT product_code 
-          FROM price_history 
-          WHERE date(updated_at) >= date(?) AND date(updated_at) <= date(?)
-        )
-      `);
-      queryParams.push(dateFrom, dateTo);
-    } else if (dateFrom) {
-      whereConditions.push(`
-        p.code IN (
-          SELECT DISTINCT product_code 
-          FROM price_history 
-          WHERE date(updated_at) >= date(?)
-        )
-      `);
-      queryParams.push(dateFrom);
-    } else if (dateTo) {
-      whereConditions.push(`
-        p.code IN (
-          SELECT DISTINCT product_code 
-          FROM price_history 
-          WHERE date(updated_at) <= date(?)
-        )
-      `);
-      queryParams.push(dateTo);
-    }
-
-    // Фильтр по категориям
     if (categories.length > 0) {
       const placeholders = categories.map(() => '?').join(',');
       whereConditions.push(`p.category IN (${placeholders})`);
       queryParams.push(...categories);
     }
-    
-    // Фильтр по брендам
     if (brands.length > 0) {
       const placeholders = brands.map(() => '?').join(',');
       whereConditions.push(`p.brand IN (${placeholders})`);
       queryParams.push(...brands);
     }
-    
-    // Поиск
     if (search && search !== '') {
       const searchLower = search.toLowerCase();
       whereConditions.push(`(p.name_lower LIKE ? OR p.code LIKE ?)`);
@@ -1839,6 +1758,7 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
     } else if (sort === 'name_desc') {
       orderClause = 'ORDER BY p.name_lower DESC, p.code';
     } else {
+      // По умолчанию — без сортировки (как пришло с сервера)
       orderClause = 'ORDER BY p.last_update DESC, p.code';
     }
 
@@ -1854,7 +1774,8 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
       LIMIT ? OFFSET ?
     `;
 
-    const productsParams = [...queryParams, limit, offset];
+    // Параметры: userId, фильтры, limit, offset
+    const productsParams = [userId, ...queryParams, limit, offset];
     
     const products = await db.execute({
       sql: productsQuery,
@@ -1865,57 +1786,10 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
     let countQuery = `SELECT COUNT(*) as count FROM products_info p`;
     let countParams = [];
 
-    // Строим условия для подсчёта
-    let countConditions = [];
-    
-    // Фильтр по датам для подсчёта
-    if (dateFrom && dateTo) {
-      countConditions.push(`
-        code IN (
-          SELECT DISTINCT product_code 
-          FROM price_history 
-          WHERE date(updated_at) >= date(?) AND date(updated_at) <= date(?)
-        )
-      `);
-      countParams.push(dateFrom, dateTo);
-    } else if (dateFrom) {
-      countConditions.push(`
-        code IN (
-          SELECT DISTINCT product_code 
-          FROM price_history 
-          WHERE date(updated_at) >= date(?)
-        )
-      `);
-      countParams.push(dateFrom);
-    } else if (dateTo) {
-      countConditions.push(`
-        code IN (
-          SELECT DISTINCT product_code 
-          FROM price_history 
-          WHERE date(updated_at) <= date(?)
-        )
-      `);
-      countParams.push(dateTo);
+    if (whereConditions.length > 0) {
+      countQuery += ' WHERE ' + whereConditions.join(' AND ');
+      countParams = queryParams;
     }
-    
-    if (categories.length > 0) {
-      const placeholders = categories.map(() => '?').join(',');
-      countConditions.push(`category IN (${placeholders})`);
-      countParams.push(...categories);
-    }
-    if (brands.length > 0) {
-      const placeholders = brands.map(() => '?').join(',');
-      countConditions.push(`brand IN (${placeholders})`);
-      countParams.push(...brands);
-    }
-    if (search && search !== '') {
-      const searchLower = search.toLowerCase();
-      countConditions.push(`(name_lower LIKE ? OR code LIKE ?)`);
-      countParams.push(`%${searchLower}%`, `%${search}%`);
-    }
-
-    const countWhereClause = countConditions.length > 0 ? 'WHERE ' + countConditions.join(' AND ') : '';
-    countQuery += ` ${countWhereClause}`;
 
     const totalCount = await db.execute({
       sql: countQuery,
@@ -1985,7 +1859,7 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
 });
 
 
-// ==================== ИЗБРАННОЕ С ПАГИНАЦИЕЙ, СОРТИРОВКОЙ И ФИЛЬТРОМ ПО ДАТАМ ====================
+// ==================== ИЗБРАННОЕ С ПАГИНАЦИЕЙ И СОРТИРОВКОЙ ====================
 app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1996,61 +1870,24 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
     const brands = req.query.brands ? 
       (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
     const search = req.query.search;
-    const sort = req.query.sort || 'price_desc';
-    const dateFrom = req.query.dateFrom;
-    const dateTo = req.query.dateTo;
+    const sort = req.query.sort || 'default';
 
-    console.log(`📦 Запрос избранного: userId=${userId}, sort=${sort}, dateFrom=${dateFrom}, dateTo=${dateTo}`);
+    console.log(`📦 Запрос избранного: userId=${userId}, sort=${sort}`);
 
-    // Строим WHERE условие
+    // Строим WHERE условие с параметрами
     let whereConditions = [`us.user_id = ?`];
     let queryParams = [userId];
 
-    // Фильтр по датам (товары, у которых есть изменения цен в указанном диапазоне)
-    if (dateFrom && dateTo) {
-      whereConditions.push(`
-        p.code IN (
-          SELECT DISTINCT product_code 
-          FROM price_history 
-          WHERE DATE(updated_at) BETWEEN ? AND ?
-        )
-      `);
-      queryParams.push(dateFrom, dateTo);
-    } else if (dateFrom) {
-      whereConditions.push(`
-        p.code IN (
-          SELECT DISTINCT product_code 
-          FROM price_history 
-          WHERE DATE(updated_at) >= ?
-        )
-      `);
-      queryParams.push(dateFrom);
-    } else if (dateTo) {
-      whereConditions.push(`
-        p.code IN (
-          SELECT DISTINCT product_code 
-          FROM price_history 
-          WHERE DATE(updated_at) <= ?
-        )
-      `);
-      queryParams.push(dateTo);
-    }
-
-    // Фильтр по категориям
     if (categories.length > 0) {
       const placeholders = categories.map(() => '?').join(',');
       whereConditions.push(`p.category IN (${placeholders})`);
       queryParams.push(...categories);
     }
-    
-    // Фильтр по брендам
     if (brands.length > 0) {
       const placeholders = brands.map(() => '?').join(',');
       whereConditions.push(`p.brand IN (${placeholders})`);
       queryParams.push(...brands);
     }
-    
-    // Поиск
     if (search && search !== '') {
       const searchLower = search.toLowerCase();
       whereConditions.push(`(p.name_lower LIKE ? OR p.code LIKE ?)`);
@@ -2104,22 +1941,16 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
     });
 
     // Запрос для общего количества
-    let countQuery = `
+    const countQuery = `
       SELECT COUNT(*) as count 
       FROM products_info p
       INNER JOIN user_shelf us ON p.code = us.product_code
+      ${whereClause}
     `;
-    let countParams = [];
-
-    let countConditions = [...whereConditions];
-    if (countConditions.length > 0) {
-      countQuery += ' WHERE ' + countConditions.join(' AND ');
-      countParams = [...queryParams];
-    }
-
+    
     const totalCount = await db.execute({
       sql: countQuery,
-      args: countParams
+      args: queryParams
     });
 
     // Получаем историю цен
